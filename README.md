@@ -33,12 +33,44 @@ $$
 
 ### First version
 
-> ed4b46bb773e479eeb6758c8d4d24bd930218a63
+```
+matmul time: 17463ms
+Throughput: 0.06 TFLOPS (0.43%)
+```
+
+### Adjust block size, `16 -> 8`
 
 ```
-bash -c "time ./matmul"
+matmul time: 7625ms
+Throughput: 0.144 TFLOPS (0.978%)
+```
 
-real    0m18.354s
-user    0m18.182s
-sys     0m0.153s
+### Open `-O2`
+
+```
+matmul time: 6674ms
+Throughput: 0.165 TFLOPS (1.117%)
+```
+
+### Make each thread calculate 4x4 elements
+
+```
+matmul time: 3611ms
+Throughput: 0.304 TFLOPS (2.065%)
+```
+
+### Adjust loop order
+
+Pre-load part of `A`/`B` to local memory. 
+
+```
+matmul time: 736ms
+Throughput: 1.494 TFLOPS (10.131%)
+```
+
+### Adjust thread block size, `4x4 -> 8x8`
+
+```
+matmul time: 492ms
+Throughput: 2.235 TFLOPS (15.156%)
 ```
