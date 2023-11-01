@@ -74,3 +74,8 @@ Throughput: 1.494 TFLOPS (10.131%)
 matmul time: 492ms
 Throughput: 2.235 TFLOPS (15.156%)
 ```
+
+## Reference
+
+- [通用图形处理器设计](https://book.douban.com/subject/35998320/)
+- [如何加速矩阵乘法——优化GEMM (CPU单线程篇)](https://renzibei.com/2021/06/30/optimize-gemm/)
