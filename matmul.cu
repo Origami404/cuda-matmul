@@ -51,7 +51,7 @@ int main(void) {
   cudaMemcpy(B, hB, MAT_SIZE, cudaMemcpyHostToDevice);
 
   // Run kernel on 1M elements on the GPU
-  auto constexpr BLK_N = 16;
+  auto constexpr BLK_N = 8;
   dim3 const blockDim{BLK_N, BLK_N, 1};
   dim3 const gridDim{N / BLK_N, N / BLK_N, 1};
 
