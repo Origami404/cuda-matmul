@@ -1,6 +1,8 @@
+#include <chrono>
 #include <cmath>
 #include <cstddef>
-#include <cstdio>
+#include <iomanip>
+#include <iostream>
 
 constexpr size_t N = 8192;
 
@@ -53,10 +55,12 @@ int main(void) {
   dim3 const blockDim{BLK_N, BLK_N, 1};
   dim3 const gridDim{N / BLK_N, N / BLK_N, 1};
 
+  auto const matmul_begin = std::chrono::steady_clock::now();
   matmul<<<gridDim, blockDim>>>(C, A, B);
 
   // Wait for GPU to finish before accessing on host
   cudaDeviceSynchronize();
+  auto const matmul_end = std::chrono::steady_clock::now();
 
   cudaMemcpy(hC, C, MAT_SIZE, cudaMemcpyDeviceToHost);
 
@@ -65,10 +69,25 @@ int main(void) {
     for (auto j = 0; j < N; j++) {
       auto const v = at(C, i, j);
       if ((i == j && !feq(v, 1.0f)) || (i != j && !feq(v, 0.0f))) {
-        printf("Error: C[%d][%d] = %f\n", i, j, v);
+        std::cout << "Error at (" << i << ", " << j << "): " << v << std::endl;
       }
     }
   }
+
+  auto const matmul_time =
+      std::chrono::duration_cast<std::chrono::milliseconds>(matmul_end -
+                                                            matmul_begin)
+          .count();
+
+  // each cell needs N fma, and there are N * N cells
+  auto const matmul_tflops = 2.0 * N * N * N / matmul_time / 1e9;
+  auto constexpr theory_max_tflops = 14.7456;
+
+  std::cout << std::setprecision(3) << std::fixed;
+  std::cout << "matmul time: " << matmul_time << "ms" << std::endl;
+  std::cout << "Throughput: " << matmul_tflops << " TFLOPS "
+            << "(" << matmul_tflops / theory_max_tflops * 100 << "%)"
+            << std::endl;
 
   // Free memory
   cudaFree(A);

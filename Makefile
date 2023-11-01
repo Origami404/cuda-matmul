@@ -9,4 +9,4 @@ clean:
 build: matmul
 
 run: build
-	bash -c "time ./matmul"
+	./matmul
