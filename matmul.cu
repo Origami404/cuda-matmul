@@ -6,7 +6,7 @@
 
 constexpr size_t N = 8192;
 // how many elements a thread handles (THD_N * THD_N)
-auto constexpr THD_N = 4;
+auto constexpr THD_N = 8;
 // how many threads in a block
 auto constexpr BLK_N = 8;
 
