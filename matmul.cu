@@ -11,13 +11,18 @@ static inline bool feq(float a, float b) { return abs(a - b) <= 1e-5f; }
 #define at(arr, i, j) ((arr)[(i)*N + (j)])
 
 // Kernel function to add the elements of two arrays
-__global__ void matmul(float *C, float *A, float *B) {
-  auto const tx = blockIdx.x * blockDim.x + threadIdx.x;
-  auto const ty = blockIdx.y * blockDim.y + threadIdx.y;
+__global__ void matmul(float *C, float *A, float *B, size_t const THD_N) {
+  auto const tx_beg = (blockIdx.x * blockDim.x + threadIdx.x) * THD_N;
+  auto const ty_beg = (blockIdx.y * blockDim.y + threadIdx.y) * THD_N;
 
-  at(C, tx, ty) = 0.0f;
-  for (auto i = 0; i < N; i++) {
-    at(C, tx, ty) += at(A, tx, i) * at(B, i, ty);
+  for (auto tx = tx_beg; tx < tx_beg + THD_N; tx++) {
+    for (auto ty = ty_beg; ty < ty_beg + THD_N; ty++) {
+      auto sum = 0.0f;
+      for (auto k = 0; k < N; k++) {
+        sum += at(A, tx, k) * at(B, k, ty);
+      }
+      at(C, tx, ty) = sum;
+    }
   }
 }
 
@@ -50,13 +55,15 @@ int main(void) {
   cudaMemcpy(A, hA, MAT_SIZE, cudaMemcpyHostToDevice);
   cudaMemcpy(B, hB, MAT_SIZE, cudaMemcpyHostToDevice);
 
-  // Run kernel on 1M elements on the GPU
+  // how many elements a thread handles (THD_N * THD_N)
+  auto constexpr THD_N = 4;
+  // how many threads in a block
   auto constexpr BLK_N = 8;
-  dim3 const blockDim{BLK_N, BLK_N, 1};
-  dim3 const gridDim{N / BLK_N, N / BLK_N, 1};
+  dim3 constexpr blockDim{BLK_N, BLK_N, 1};
+  dim3 constexpr gridDim{N / BLK_N / THD_N, N / BLK_N / THD_N, 1};
 
   auto const matmul_begin = std::chrono::steady_clock::now();
-  matmul<<<gridDim, blockDim>>>(C, A, B);
+  matmul<<<gridDim, blockDim>>>(C, A, B, THD_N);
 
   // Wait for GPU to finish before accessing on host
   cudaDeviceSynchronize();
