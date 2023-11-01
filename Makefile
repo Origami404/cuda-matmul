@@ -1,5 +1,5 @@
 matmul: matmul.cu
-	nvcc -o matmul $<
+	nvcc -std=c++17 -o matmul $<
 
 .PHONE: clean build run
 
