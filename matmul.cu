@@ -80,7 +80,7 @@ __global__ void matmul(float *C, float *Ar, float *B) {
 // host copies of A, B, C
 float hA[N * N], hB[N * N], hC[N * N];
 
-int main(void) {
+auto test() {
   // init two matrixes
   for (auto i = 0; i < N; i++) {
     for (auto j = 0; j < N; j++) {
@@ -131,10 +131,27 @@ int main(void) {
     }
   }
 
+  // Free memory
+  cudaFree(A);
+  cudaFree(B);
+  cudaFree(C);
+
   auto const matmul_time =
       std::chrono::duration_cast<std::chrono::milliseconds>(matmul_end -
                                                             matmul_begin)
           .count();
+
+  return matmul_time;
+}
+
+int main(void) {
+  auto constexpr TEST_N = 10;
+
+  auto matmul_time = 0.0;
+  for (auto i = 0; i < TEST_N; i++) {
+    matmul_time += test();
+  }
+  matmul_time /= TEST_N;
 
   // each cell needs N fma, and there are N * N cells
   auto const matmul_tflops = 2.0 * N * N * N / matmul_time / 1e9;
@@ -145,11 +162,6 @@ int main(void) {
   std::cout << "Throughput: " << matmul_tflops << " TFLOPS "
             << "(" << matmul_tflops / theory_max_tflops * 100 << "%)"
             << std::endl;
-
-  // Free memory
-  cudaFree(A);
-  cudaFree(B);
-  cudaFree(C);
 
   return 0;
 }
