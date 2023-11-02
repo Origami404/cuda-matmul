@@ -15,10 +15,27 @@ static inline bool feq(float a, float b) { return abs(a - b) <= 1e-5f; }
 #define at(arr, i, j) ((arr)[(i)*N + (j)])
 
 __global__ void mat_transpose(float *C, float *A) {
-  auto const tx = blockIdx.x * blockDim.x + threadIdx.x;
-  auto const ty = blockIdx.y * blockDim.y + threadIdx.y;
+  auto const tx = (blockIdx.x * BLK_N + threadIdx.x) * THD_N;
+  auto const ty = (blockIdx.y * BLK_N + threadIdx.y) * THD_N;
 
-  at(C, tx, ty) = at(A, ty, tx);
+  float pC[THD_N][THD_N], pA[THD_N][THD_N];
+  for (auto i = 0; i < THD_N; i++) {
+    for (auto j = 0; j < THD_N; j++) {
+      pA[i][j] = at(A, tx + i, ty + j);
+    }
+  }
+
+  for (auto i = 0; i < THD_N; i++) {
+    for (auto j = 0; j < THD_N; j++) {
+      pC[i][j] = pA[j][i];
+    }
+  }
+
+  for (auto i = 0; i < THD_N; i++) {
+    for (auto j = 0; j < THD_N; j++) {
+      at(C, tx + i, ty + j) = pC[i][j];
+    }
+  }
 }
 
 // Kernel function to add the elements of two arrays
@@ -94,12 +111,10 @@ int main(void) {
 
   auto const matmul_begin = std::chrono::steady_clock::now();
 
-  dim3 constexpr blockDim_rev{1, 1, 1};
-  dim3 constexpr gridDim_rev{N, N, 1};
-  mat_transpose<<<gridDim_rev, blockDim_rev>>>(T, A);
-
   dim3 constexpr blockDim{BLK_N, BLK_N, 1};
   dim3 constexpr gridDim{N / BLK_N / THD_N, N / BLK_N / THD_N, 1};
+
+  mat_transpose<<<gridDim, blockDim>>>(T, A);
   matmul<<<gridDim, blockDim>>>(C, T, B);
 
   // Wait for GPU to finish before accessing on host

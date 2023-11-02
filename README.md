@@ -82,6 +82,13 @@ matmul time: 335ms
 Throughput: 3.282 TFLOPS (22.258%)
 ```
 
+### Tiled matrix transpose
+
+```
+matmul time: 249ms
+Throughput: 4.416 TFLOPS (29.946%)
+```
+
 ## Reference
 
 - [通用图形处理器设计](https://book.douban.com/subject/35998320/)
