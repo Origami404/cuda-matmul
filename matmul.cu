@@ -14,8 +14,15 @@ static inline bool feq(float a, float b) { return abs(a - b) <= 1e-5f; }
 // use macro for both host and device
 #define at(arr, i, j) ((arr)[(i)*N + (j)])
 
+__global__ void mat_transpose(float *C, float *A) {
+  auto const tx = blockIdx.x * blockDim.x + threadIdx.x;
+  auto const ty = blockIdx.y * blockDim.y + threadIdx.y;
+
+  at(C, tx, ty) = at(A, ty, tx);
+}
+
 // Kernel function to add the elements of two arrays
-__global__ void matmul(float *C, float *A, float *B) {
+__global__ void matmul(float *C, float *Ar, float *B) {
   auto const tx_beg = (blockIdx.x * BLK_N + threadIdx.x) * THD_N;
   auto const ty_beg = (blockIdx.y * BLK_N + threadIdx.y) * THD_N;
 
@@ -31,7 +38,7 @@ __global__ void matmul(float *C, float *A, float *B) {
   for (auto k = 0; k < N; k++) {
     // load sA and sB
     for (auto i = 0; i < THD_N; i++) {
-      sA[i] = at(A, tx_beg + i, k);
+      sA[i] = at(Ar, k, tx_beg + i);
     }
     for (auto j = 0; j < THD_N; j++) {
       sB[j] = at(B, k, ty_beg + j);
@@ -72,22 +79,28 @@ int main(void) {
 
   // device copies of A, B, C
   float *A, *B, *C;
+  float *T;
 
   // Allocate Unified Memory – accessible from CPU or GPU
   auto constexpr MAT_SIZE = N * N * sizeof(float);
   cudaMallocManaged(&A, MAT_SIZE);
   cudaMallocManaged(&B, MAT_SIZE);
   cudaMallocManaged(&C, MAT_SIZE);
+  cudaMallocManaged(&T, MAT_SIZE);
 
   cudaMemcpy(A, hA, MAT_SIZE, cudaMemcpyHostToDevice);
   cudaMemcpy(B, hB, MAT_SIZE, cudaMemcpyHostToDevice);
   cudaMemset(C, 1, MAT_SIZE);
 
+  auto const matmul_begin = std::chrono::steady_clock::now();
+
+  dim3 constexpr blockDim_rev{1, 1, 1};
+  dim3 constexpr gridDim_rev{N, N, 1};
+  mat_transpose<<<gridDim_rev, blockDim_rev>>>(T, A);
+
   dim3 constexpr blockDim{BLK_N, BLK_N, 1};
   dim3 constexpr gridDim{N / BLK_N / THD_N, N / BLK_N / THD_N, 1};
-
-  auto const matmul_begin = std::chrono::steady_clock::now();
-  matmul<<<gridDim, blockDim>>>(C, A, B);
+  matmul<<<gridDim, blockDim>>>(C, T, B);
 
   // Wait for GPU to finish before accessing on host
   cudaDeviceSynchronize();

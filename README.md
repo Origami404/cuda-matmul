@@ -75,6 +75,13 @@ matmul time: 492ms
 Throughput: 2.235 TFLOPS (15.156%)
 ```
 
+### Add normal matrix transpose
+
+```
+matmul time: 335ms
+Throughput: 3.282 TFLOPS (22.258%)
+```
+
 ## Reference
 
 - [通用图形处理器设计](https://book.douban.com/subject/35998320/)
