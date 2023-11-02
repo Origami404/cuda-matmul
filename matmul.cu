@@ -43,36 +43,36 @@ __global__ void matmul(float *C, float *Ar, float *B) {
   auto const tx_beg = (blockIdx.x * BLK_N + threadIdx.x) * THD_N;
   auto const ty_beg = (blockIdx.y * BLK_N + threadIdx.y) * THD_N;
 
-  float sC[THD_N][THD_N], sA[THD_N], sB[THD_N];
+  float pC[THD_N][THD_N], pA[THD_N], pB[THD_N];
 
   // set sC to 0
   for (auto i = 0; i < THD_N; i++) {
     for (auto j = 0; j < THD_N; j++) {
-      sC[i][j] = 0.0f;
+      pC[i][j] = 0.0f;
     }
   }
 
   for (auto k = 0; k < N; k++) {
     // load sA and sB
-    for (auto i = 0; i < THD_N; i++) {
-      sA[i] = at(Ar, k, tx_beg + i);
+    for (auto y = 0; y < THD_N; y++) {
+      pA[y] = at(Ar, k, ty_beg + y);
     }
-    for (auto j = 0; j < THD_N; j++) {
-      sB[j] = at(B, k, ty_beg + j);
+    for (auto x = 0; x < THD_N; x++) {
+      pB[x] = at(B, k, tx_beg + x);
     }
 
     // compute sC
-    for (auto i = 0; i < THD_N; i++) {
-      for (auto j = 0; j < THD_N; j++) {
-        sC[i][j] += sA[i] * sB[j];
+    for (auto y = 0; y < THD_N; y++) {
+      for (auto x = 0; x < THD_N; x++) {
+        pC[y][x] += pA[y] * pB[x];
       }
     }
   }
 
   // write back to C
-  for (auto i = 0; i < THD_N; i++) {
-    for (auto j = 0; j < THD_N; j++) {
-      at(C, tx_beg + i, ty_beg + j) = sC[i][j];
+  for (auto y = 0; y < THD_N; y++) {
+    for (auto x = 0; x < THD_N; x++) {
+      at(C, ty_beg + y, tx_beg + x) = pC[y][x];
     }
   }
 }
@@ -82,15 +82,15 @@ float hA[N * N], hB[N * N], hC[N * N];
 
 auto test() {
   // init two matrixes
-  for (auto i = 0; i < N; i++) {
-    for (auto j = 0; j < N; j++) {
-      at(hA, i, j) = i == j ? 1.0f : 0.0f;
+  for (auto y = 0; y < N; y++) {
+    for (auto x = 0; x < N; x++) {
+      at(hA, y, x) = y == x ? 1.0f : 0.0f;
     }
   }
 
-  for (auto i = 0; i < N; i++) {
-    for (auto j = 0; j < N; j++) {
-      at(hB, i, j) = i == j ? 1.0f : 0.0f;
+  for (auto y = 0; y < N; y++) {
+    for (auto x = 0; x < N; x++) {
+      at(hB, y, x) = y == x ? 1.0f : 0.0f;
     }
   }
 
@@ -145,7 +145,7 @@ auto test() {
 }
 
 int main(void) {
-  auto constexpr TEST_N = 10;
+  auto constexpr TEST_N = 15;
 
   auto matmul_time = 0.0;
   for (auto i = 0; i < TEST_N; i++) {
