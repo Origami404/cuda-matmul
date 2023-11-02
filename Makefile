@@ -1,16 +1,16 @@
-matmul: matmul.cu
-	nvcc -std=c++17 -O2 -o matmul $<
-
 .PHONE: clean build run
 
 clean:
 	rm -f matmul
 
-build: matmul
+build: 
+	nvcc -std=c++17 -O2 -o matmul matmul.cu
 
 run: build
 	./matmul
 
-gdb: build
-	nvcc -std=c++17 -g -G -o matmul $<
+build-debug:
+	nvcc -std=c++17 -g -G -o matmul matmul.cu
+
+gdb: build-debug
 	cuda-gdb ./matmul
