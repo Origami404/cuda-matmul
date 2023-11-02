@@ -4,77 +4,36 @@
 #include <iomanip>
 #include <iostream>
 
+#include <cublas_v2.h>
+
 constexpr size_t N = 8192;
-// how many elements a thread handles (THD_N * THD_N)
-auto constexpr THD_N = 8;
 // how many threads in a block
-auto constexpr BLK_N = 8;
+auto constexpr BLK_N = 32;
 
 static inline bool feq(float a, float b) { return abs(a - b) <= 1e-5f; }
 // use macro for both host and device
 #define at(arr, i, j) ((arr)[(i)*N + (j)])
 
-__global__ void mat_transpose(float *A) {
-  auto const tx = (blockIdx.x * BLK_N + threadIdx.x) * THD_N;
-  auto const ty = (blockIdx.y * BLK_N + threadIdx.y) * THD_N;
-
-  float pA[THD_N][THD_N];
-  for (auto i = 0; i < THD_N; i++) {
-    for (auto j = 0; j < THD_N; j++) {
-      pA[i][j] = at(A, tx + i, ty + j);
-    }
-  }
-
-  for (auto i = 0; i < THD_N; i++) {
-    for (auto j = 0; j < i; j++) {
-      pA[i][j] = pA[j][i];
-    }
-  }
-
-  for (auto i = 0; i < THD_N; i++) {
-    for (auto j = 0; j < THD_N; j++) {
-      at(A, tx + i, ty + j) = pA[i][j];
-    }
-  }
-}
-
 // Kernel function to add the elements of two arrays
-__global__ void matmul(float *C, float *Ar, float *B) {
-  auto const tx_beg = (blockIdx.x * BLK_N + threadIdx.x) * THD_N;
-  auto const ty_beg = (blockIdx.y * BLK_N + threadIdx.y) * THD_N;
+__global__ void matmul(float *C, float *A, float *B) {
+  auto const tx = blockIdx.x * BLK_N + threadIdx.x;
+  auto const ty = blockIdx.y * BLK_N + threadIdx.y;
 
-  float sC[THD_N][THD_N], sA[THD_N], sB[THD_N];
+  __shared__ float sA[BLK_N][BLK_N + 1];
+  __shared__ float sB[BLK_N][BLK_N + 1];
+  float sum = 0.0f;
 
-  // set sC to 0
-  for (auto i = 0; i < THD_N; i++) {
-    for (auto j = 0; j < THD_N; j++) {
-      sC[i][j] = 0.0f;
+  for (auto b = 0; b < N; b += BLK_N) {
+    sA[threadIdx.x][threadIdx.y] = at(A, tx, b + threadIdx.y);
+    sB[threadIdx.x][threadIdx.y] = at(B, b + threadIdx.x, ty);
+
+    __syncthreads();
+
+    for (int k = 0; k < BLK_N; k++) {
+      sum += sA[threadIdx.x][k] * sB[k][threadIdx.y];
     }
   }
-
-  for (auto k = 0; k < N; k++) {
-    // load sA and sB
-    for (auto i = 0; i < THD_N; i++) {
-      sA[i] = at(Ar, k, tx_beg + i);
-    }
-    for (auto j = 0; j < THD_N; j++) {
-      sB[j] = at(B, k, ty_beg + j);
-    }
-
-    // compute sC
-    for (auto i = 0; i < THD_N; i++) {
-      for (auto j = 0; j < THD_N; j++) {
-        sC[i][j] += sA[i] * sB[j];
-      }
-    }
-  }
-
-  // write back to C
-  for (auto i = 0; i < THD_N; i++) {
-    for (auto j = 0; j < THD_N; j++) {
-      at(C, tx_beg + i, ty_beg + j) = sC[i][j];
-    }
-  }
+  at(C, tx, ty) = sum;
 }
 
 // host copies of A, B, C
@@ -107,13 +66,18 @@ auto test() {
   cudaMemcpy(B, hB, MAT_SIZE, cudaMemcpyHostToDevice);
   cudaMemset(C, 1, MAT_SIZE);
 
-  dim3 constexpr blockDim{BLK_N, BLK_N, 1};
-  dim3 constexpr gridDim{N / BLK_N / THD_N, N / BLK_N / THD_N, 1};
+  //   dim3 constexpr blockDim{BLK_N, BLK_N, 1};
+  //   dim3 constexpr gridDim{N / BLK_N, N / BLK_N, 1};
+
+  cublasHandle_t handler;
+  cublasCreate(&handler);
 
   auto const matmul_begin = std::chrono::steady_clock::now();
 
-  mat_transpose<<<gridDim, blockDim>>>(A);
-  matmul<<<gridDim, blockDim>>>(C, A, B);
+  //   matmul<<<gridDim, blockDim>>>(C, A, B);
+  auto const alpha = 1.0f, beta = 0.0f;
+  cublasSgemm(handler, CUBLAS_OP_N, CUBLAS_OP_N, N, N, N, &alpha, A, N, B, N,
+              &beta, C, N);
 
   // Wait for GPU to finish before accessing on host
   cudaDeviceSynchronize();
@@ -145,7 +109,7 @@ auto test() {
 }
 
 int main(void) {
-  auto constexpr TEST_N = 10;
+  auto constexpr TEST_N = 40;
 
   auto matmul_time = 0.0;
   for (auto i = 0; i < TEST_N; i++) {
@@ -156,13 +120,11 @@ int main(void) {
   // each cell needs N fma, and there are N * N cells
   auto const matmul_tflops = 2.0 * N * N * N / matmul_time / 1e9;
   auto constexpr theory_max_tflops = 14.7456;
-  auto constexpr cublas_tflops = 8.228;
 
   std::cout << std::setprecision(3) << std::fixed;
-  std::cout << "matmul time: " << matmul_time << " ms" << std::endl;
-  std::cout << "Throughput: " << matmul_tflops << " TFLOPS \n"
-            << "    (" << matmul_tflops / theory_max_tflops * 100 << "% Max)\n"
-            << "    (" << matmul_tflops / cublas_tflops * 100 << "% cuBLAS)\n"
+  std::cout << "matmul time: " << matmul_time << "ms" << std::endl;
+  std::cout << "Throughput: " << matmul_tflops << " TFLOPS "
+            << "(" << matmul_tflops / theory_max_tflops * 100 << "%)"
             << std::endl;
 
   return 0;
