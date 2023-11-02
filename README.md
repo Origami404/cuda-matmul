@@ -89,6 +89,13 @@ matmul time: 249ms
 Throughput: 4.416 TFLOPS (29.946%)
 ```
 
+### In-place matrix transpose
+
+```
+matmul time: 225ms
+Throughput: 4.887 TFLOPS (33.140%)
+```
+
 ## Reference
 
 - [通用图形处理器设计](https://book.douban.com/subject/35998320/)
