@@ -5,76 +5,45 @@
 #include <iostream>
 
 constexpr size_t N = 8192;
-// how many elements a thread handles (THD_N * THD_N)
-auto constexpr THD_N = 8;
-// how many threads in a block
-auto constexpr BLK_N = 8;
+auto constexpr BLK_N = 32;
 
 static inline bool feq(float a, float b) { return abs(a - b) <= 1e-5f; }
 // use macro for both host and device
 #define at(arr, i, j) ((arr)[(i)*N + (j)])
-
-__global__ void mat_transpose(float *A) {
-  auto const tx = (blockIdx.x * BLK_N + threadIdx.x) * THD_N;
-  auto const ty = (blockIdx.y * BLK_N + threadIdx.y) * THD_N;
-
-  float pA[THD_N][THD_N];
-  for (auto i = 0; i < THD_N; i++) {
-    for (auto j = 0; j < THD_N; j++) {
-      pA[i][j] = at(A, tx + i, ty + j);
-    }
-  }
-
-  for (auto i = 0; i < THD_N; i++) {
-    for (auto j = 0; j < i; j++) {
-      pA[i][j] = pA[j][i];
-    }
-  }
-
-  for (auto i = 0; i < THD_N; i++) {
-    for (auto j = 0; j < THD_N; j++) {
-      at(A, tx + i, ty + j) = pA[i][j];
-    }
-  }
-}
+#define L(a, b, n) ((a) * (n) + (b))
 
 // Kernel function to add the elements of two arrays
-__global__ void matmul(float *C, float *Ar, float *B) {
-  auto const tx_beg = (blockIdx.x * BLK_N + threadIdx.x) * THD_N;
-  auto const ty_beg = (blockIdx.y * BLK_N + threadIdx.y) * THD_N;
+__global__ void matmul(float *C, float *A, float *B) {
+  __shared__ float sC[BLK_N][BLK_N];
+  __shared__ float sA[BLK_N][BLK_N];
+  __shared__ float sB[BLK_N][BLK_N];
 
-  float pC[THD_N][THD_N], pA[THD_N], pB[THD_N];
+  // all the indices are named as ijk, where:
+  //    i: means who use, t for thread, b for block
+  //    j: means related to which matrix, m for all matrix, b for block matrix
+  //    k: means related to which axis, x for x axis, y for y axis, c for count
 
-  // set sC to 0
-  for (auto y = 0; y < THD_N; y++) {
-    for (auto x = 0; x < THD_N; x++) {
-      pC[y][x] = 0.0f;
+  auto const ty = threadIdx.y;
+  auto const tx = threadIdx.x;
+  auto const by = blockIdx.y;
+  auto const bx = blockIdx.x;
+
+  sC[ty][tx] = 0.0f;
+
+  for (auto bk = 0; bk < N / BLK_N; bk++) {
+    sA[ty][tx] = at(A, by * BLK_N + ty, bk * BLK_N + tx);
+    sB[ty][tx] = at(B, bk * BLK_N + ty, bx * BLK_N + tx);
+
+    __syncthreads();
+
+    for (auto tk = 0; tk < BLK_N; tk++) {
+      sC[ty][tx] += sA[ty][tk] * sB[tk][tx];
     }
+
+    __syncthreads();
   }
 
-  for (auto k = 0; k < N; k++) {
-    // load sA and sB
-    for (auto y = 0; y < THD_N; y++) {
-      pA[y] = at(Ar, k, ty_beg + y);
-    }
-    for (auto x = 0; x < THD_N; x++) {
-      pB[x] = at(B, k, tx_beg + x);
-    }
-
-    // compute sC
-    for (auto y = 0; y < THD_N; y++) {
-      for (auto x = 0; x < THD_N; x++) {
-        pC[y][x] += pA[y] * pB[x];
-      }
-    }
-  }
-
-  // write back to C
-  for (auto y = 0; y < THD_N; y++) {
-    for (auto x = 0; x < THD_N; x++) {
-      at(C, ty_beg + y, tx_beg + x) = pC[y][x];
-    }
-  }
+  at(C, by * BLK_N + ty, bx * BLK_N + tx) = sC[ty][tx];
 }
 
 // host copies of A, B, C
@@ -108,11 +77,10 @@ auto test() {
   cudaMemset(C, 1, MAT_SIZE);
 
   dim3 constexpr blockDim{BLK_N, BLK_N, 1};
-  dim3 constexpr gridDim{N / BLK_N / THD_N, N / BLK_N / THD_N, 1};
+  dim3 constexpr gridDim{N / BLK_N, N / BLK_N, 1};
 
   auto const matmul_begin = std::chrono::steady_clock::now();
 
-  mat_transpose<<<gridDim, blockDim>>>(A);
   matmul<<<gridDim, blockDim>>>(C, A, B);
 
   // Wait for GPU to finish before accessing on host
@@ -127,6 +95,7 @@ auto test() {
       auto const v = at(C, i, j);
       if ((i == j && !feq(v, 1.0f)) || (i != j && !feq(v, 0.0f))) {
         std::cout << "Error at (" << i << ", " << j << "): " << v << std::endl;
+        std::exit(EXIT_FAILURE);
       }
     }
   }

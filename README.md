@@ -29,7 +29,7 @@ $$
 
 > 1 FMA is counted as 2 FLOP
 
-## Time record
+## Time record (first try)
 
 ### First version
 
@@ -96,7 +96,19 @@ matmul time: 225ms
 Throughput: 4.887 TFLOPS (33.140%)
 ```
 
+## Time record (second try)
+
+### Init, shared memory & block tile
+
+```
+Throughput: 0.874 TFLOPS 
+    (5.925% Max)
+    (10.619% cuBLAS)
+```
+
 ## Reference
 
 - [通用图形处理器设计](https://book.douban.com/subject/35998320/)
 - [如何加速矩阵乘法——优化GEMM (CPU单线程篇)](https://renzibei.com/2021/06/30/optimize-gemm/)
+- [How to Optimize a CUDA Matmul Kernel for cuBLAS-like Performance: a Worklog](https://siboehm.com/articles/22/CUDA-MMM)
+- [CUDA C++ Best Practices Guide](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/index.html)
