@@ -46,9 +46,9 @@ __global__ void matmul(float *C, float *Ar, float *B) {
   float pC[THD_N][THD_N], pA[THD_N], pB[THD_N];
 
   // set sC to 0
-  for (auto i = 0; i < THD_N; i++) {
-    for (auto j = 0; j < THD_N; j++) {
-      pC[i][j] = 0.0f;
+  for (auto y = 0; y < THD_N; y++) {
+    for (auto x = 0; x < THD_N; x++) {
+      pC[y][x] = 0.0f;
     }
   }
 
@@ -145,7 +145,12 @@ auto test() {
 }
 
 int main(void) {
-  auto constexpr TEST_N = 15;
+  auto constexpr WARMUP_N = 5;
+  auto constexpr TEST_N = 30;
+
+  for (auto i = 0; i < WARMUP_N; i++) {
+    test();
+  }
 
   auto matmul_time = 0.0;
   for (auto i = 0; i < TEST_N; i++) {
