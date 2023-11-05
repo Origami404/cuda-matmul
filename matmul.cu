@@ -36,11 +36,21 @@ __global__ void matmul(float *C, float *A, float *B) {
 
     __syncthreads();
 
+    float pA[BLK_N], pB[BLK_N];
     for (auto tk = 0; tk < BLK_N; tk++) {
-      sC[ty][tx] += sA[ty][tk] * sB[tk][tx];
+      pA[tk] = sA[ty][tk];
+    }
+    for (auto tk = 0; tk < BLK_N; tk++) {
+      pB[tk] = sB[tk][tx];
     }
 
     __syncthreads();
+
+    float sum = 0.0f;
+    for (auto tk = 0; tk < BLK_N; tk++) {
+      sum += pA[tk] * pB[tk];
+    }
+    sC[ty][tx] += sum;
   }
 
   at(C, by * BLK_N + ty, bx * BLK_N + tx) = sC[ty][tx];
@@ -114,6 +124,7 @@ auto test() {
 }
 
 int main(void) {
+#ifndef PROFILE
   auto constexpr WARMUP_N = 5;
   auto constexpr TEST_N = 30;
 
@@ -126,6 +137,9 @@ int main(void) {
     matmul_time += test();
   }
   matmul_time /= TEST_N;
+#else
+  auto const matmul_time = test();
+#endif
 
   // each cell needs N fma, and there are N * N cells
   auto const matmul_tflops = 2.0 * N * N * N / matmul_time / 1e9;

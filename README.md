@@ -106,6 +106,10 @@ Throughput: 0.874 TFLOPS
     (10.619% cuBLAS)
 ```
 
+### Preload sA/sB to register
+
+No improvement.
+
 ## Reference
 
 - [通用图形处理器设计](https://book.douban.com/subject/35998320/)
