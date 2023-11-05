@@ -110,6 +110,18 @@ Throughput: 0.874 TFLOPS
 
 No improvement.
 
+### Make each thread calculate 1x32 elements
+
+> it looks like we make 32 thread a 32xf32 vector,
+> and they do 32 times works for each row in the block.
+
+```
+matmul time: 381.333 ms
+Throughput: 2.883 TFLOPS 
+    (19.554% Max)
+    (35.043% cuBLAS)
+```
+
 ## Reference
 
 - [通用图形处理器设计](https://book.douban.com/subject/35998320/)

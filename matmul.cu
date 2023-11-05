@@ -14,46 +14,54 @@ static inline bool feq(float a, float b) { return abs(a - b) <= 1e-5f; }
 
 // Kernel function to add the elements of two arrays
 __global__ void matmul(float *C, float *A, float *B) {
+  // each block has 32x1 threads, each thread computes 1x32 element
+  // a grid has N/32 blocks in x axis and N/32 blocks in y axis
+
   __shared__ float sC[BLK_N][BLK_N];
   __shared__ float sA[BLK_N][BLK_N];
   __shared__ float sB[BLK_N][BLK_N];
 
-  // all the indices are named as ijk, where:
-  //    i: means who use, t for thread, b for block
-  //    j: means related to which matrix, m for all matrix, b for block matrix
-  //    k: means related to which axis, x for x axis, y for y axis, c for count
-
-  auto const ty = threadIdx.y;
-  auto const tx = threadIdx.x;
   auto const by = blockIdx.y;
   auto const bx = blockIdx.x;
 
-  sC[ty][tx] = 0.0f;
+  auto const x = threadIdx.x;
 
-  for (auto bk = 0; bk < N / BLK_N; bk++) {
-    sA[ty][tx] = at(A, by * BLK_N + ty, bk * BLK_N + tx);
-    sB[ty][tx] = at(B, bk * BLK_N + ty, bx * BLK_N + tx);
-
-    __syncthreads();
-
-    float pA[BLK_N], pB[BLK_N];
-    for (auto tk = 0; tk < BLK_N; tk++) {
-      pA[tk] = sA[ty][tk];
-    }
-    for (auto tk = 0; tk < BLK_N; tk++) {
-      pB[tk] = sB[tk][tx];
-    }
-
-    __syncthreads();
-
-    float sum = 0.0f;
-    for (auto tk = 0; tk < BLK_N; tk++) {
-      sum += pA[tk] * pB[tk];
-    }
-    sC[ty][tx] += sum;
+  for (auto y = 0; y < BLK_N; y++) {
+    sC[y][x] = 0.0f;
   }
 
-  at(C, by * BLK_N + ty, bx * BLK_N + tx) = sC[ty][tx];
+  for (auto bk = 0; bk < N / BLK_N; bk++) {
+    for (auto y = 0; y < BLK_N; y++) {
+      sA[y][x] = at(A, by * BLK_N + y, bk * BLK_N + x);
+      sB[y][x] = at(B, bk * BLK_N + y, bx * BLK_N + x);
+    }
+
+    // ensure pA/pB is loaded
+    __syncthreads();
+
+    float pB[BLK_N];
+    for (auto y = 0; y < BLK_N; y++) {
+      pB[y] = sB[y][x];
+    }
+
+    float pC[BLK_N] = {0.0f};
+    for (auto tk = 0; tk < BLK_N; tk++) {
+      for (auto y = 0; y < BLK_N; y++) {
+        pC[y] += sA[y][tk] * pB[tk];
+      }
+    }
+
+    for (auto y = 0; y < BLK_N; y++) {
+      sC[y][x] += pC[y];
+    }
+
+    // ensure pA/pB is no longger needed
+    __syncthreads();
+  }
+
+  for (auto y = 0; y < BLK_N; y++) {
+    at(C, by * BLK_N + y, bx * BLK_N + x) = sC[y][x];
+  }
 }
 
 // host copies of A, B, C
@@ -86,7 +94,7 @@ auto test() {
   cudaMemcpy(B, hB, MAT_SIZE, cudaMemcpyHostToDevice);
   cudaMemset(C, 1, MAT_SIZE);
 
-  dim3 constexpr blockDim{BLK_N, BLK_N, 1};
+  dim3 constexpr blockDim{BLK_N, 1, 1};
   dim3 constexpr gridDim{N / BLK_N, N / BLK_N, 1};
 
   auto const matmul_begin = std::chrono::steady_clock::now();
