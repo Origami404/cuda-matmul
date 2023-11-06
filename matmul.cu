@@ -17,18 +17,15 @@ __global__ void matmul(float *C, float *A, float *B) {
   // each block has 32x1 threads, each thread computes 1x32 element
   // a grid has N/32 blocks in x axis and N/32 blocks in y axis
 
-  __shared__ float sC[BLK_N][BLK_N];
   __shared__ float sA[BLK_N][BLK_N];
   __shared__ float sB[BLK_N][BLK_N];
+  float pB[BLK_N];
+  float pC[BLK_N] = {0.0f};
 
   auto const by = blockIdx.y;
   auto const bx = blockIdx.x;
 
   auto const x = threadIdx.x;
-
-  for (auto y = 0; y < BLK_N; y++) {
-    sC[y][x] = 0.0f;
-  }
 
   for (auto bk = 0; bk < N / BLK_N; bk++) {
     for (auto y = 0; y < BLK_N; y++) {
@@ -42,20 +39,14 @@ __global__ void matmul(float *C, float *A, float *B) {
     // ensure pA/pB is loaded
     __syncthreads();
 
-    float pB[BLK_N];
     for (auto y = 0; y < BLK_N; y++) {
       pB[y] = sB[y][x];
     }
 
-    float pC[BLK_N] = {0.0f};
     for (auto tk = 0; tk < BLK_N; tk++) {
       for (auto y = 0; y < BLK_N; y++) {
         pC[y] += sA[y][tk] * pB[tk];
       }
-    }
-
-    for (auto y = 0; y < BLK_N; y++) {
-      sC[y][x] += pC[y];
     }
 
     // ensure pA/pB is no longger needed
@@ -63,7 +54,7 @@ __global__ void matmul(float *C, float *A, float *B) {
   }
 
   for (auto y = 0; y < BLK_N; y++) {
-    at(C, by * BLK_N + y, bx * BLK_N + x) = sC[y][x];
+    at(C, by * BLK_N + y, bx * BLK_N + x) += pC[y];
   }
 }
 

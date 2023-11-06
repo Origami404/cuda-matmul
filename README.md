@@ -131,6 +131,8 @@ Throughput: 3.162 TFLOPS
     (38.429% cuBLAS)
 ```
 
+Let each thread directly write to global memory, can save 1/3 shared memory. No decrease in performance.
+
 ## Reference
 
 - [通用图形处理器设计](https://book.douban.com/subject/35998320/)
