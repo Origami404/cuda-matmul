@@ -30,18 +30,32 @@ __global__ void matmul(float *C, float *A, float *B) {
   for (auto bk = 0; bk < N / BLK_SIZE; bk++) {
     // load sA/sB
     for (auto y = 0; y < THD_N; y++) {
-      for (auto x = 0; x < THD_N; x++) {
+      for (auto x = 0; x < THD_N; x += 4) {
         auto const gy = by * BLK_SIZE + ty * THD_N + y;
         auto const gk = bk * BLK_SIZE + tx * THD_N + x;
-        sA[ty * THD_N + y][tx * THD_N + x] = at(A, gy, gk);
+        float4 const t = *reinterpret_cast<float4 const *>(&at(A, gy, gk));
+
+        auto const sy = ty * THD_N + y;
+        auto const sx = tx * THD_N + x;
+        sA[sy][sx + 0] = t.x;
+        sA[sy][sx + 1] = t.y;
+        sA[sy][sx + 2] = t.z;
+        sA[sy][sx + 3] = t.w;
       }
     }
 
     for (auto y = 0; y < THD_N; y++) {
-      for (auto x = 0; x < THD_N; x++) {
+      for (auto x = 0; x < THD_N; x += 4) {
         auto const gk = bk * BLK_SIZE + ty * THD_N + y;
         auto const gx = bx * BLK_SIZE + tx * THD_N + x;
-        sB[ty * THD_N + y][tx * THD_N + x] = at(B, gk, gx);
+        float4 const t = *reinterpret_cast<float4 const *>(&at(B, gk, gx));
+
+        auto const sy = ty * THD_N + y;
+        auto const sx = tx * THD_N + x;
+        sB[sy][sx + 0] = t.x;
+        sB[sy][sx + 1] = t.y;
+        sB[sy][sx + 2] = t.z;
+        sB[sy][sx + 3] = t.w;
       }
     }
 
@@ -70,10 +84,16 @@ __global__ void matmul(float *C, float *A, float *B) {
   }
 
   for (auto y = 0; y < THD_N; y++) {
-    for (auto x = 0; x < THD_N; x++) {
+    for (auto x = 0; x < THD_N; x += 4) {
       auto const gy = by * BLK_SIZE + ty * THD_N + y;
       auto const gx = bx * BLK_SIZE + tx * THD_N + x;
-      at(C, gy, gx) += pC[y][x];
+      float4 *gtp = reinterpret_cast<float4 *>(&at(C, gy, gx));
+      float4 gt = *gtp;
+      gt.x += pC[y][x + 0];
+      gt.y += pC[y][x + 1];
+      gt.z += pC[y][x + 2];
+      gt.w += pC[y][x + 3];
+      *gtp = gt;
     }
   }
 }

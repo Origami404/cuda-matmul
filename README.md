@@ -142,6 +142,15 @@ Throughput: 6.468 TFLOPS
 
 Let each thread directly write to global memory, can save 1/3 shared memory. No decrease in performance.
 
+### Vectorize gmem load/store
+
+```
+matmul time: 123.633 ms
+Throughput: 8.893 TFLOPS 
+    (60.312% Max)
+    (108.086% cuBLAS)
+```
+
 ## Reference
 
 - [通用图形处理器设计](https://book.douban.com/subject/35998320/)
