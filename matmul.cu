@@ -33,6 +33,9 @@ __global__ void matmul(float *C, float *A, float *B) {
   for (auto bk = 0; bk < N / BLK_N; bk++) {
     for (auto y = 0; y < BLK_N; y++) {
       sA[y][x] = at(A, by * BLK_N + y, bk * BLK_N + x);
+    }
+
+    for (auto y = 0; y < BLK_N; y++) {
       sB[y][x] = at(B, bk * BLK_N + y, bx * BLK_N + x);
     }
 

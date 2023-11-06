@@ -122,6 +122,15 @@ Throughput: 2.883 TFLOPS
     (35.043% cuBLAS)
 ```
 
+After adjusted the load loop, the performance has a little improvement.
+
+```
+matmul time: 347.733 ms
+Throughput: 3.162 TFLOPS 
+    (21.443% Max)
+    (38.429% cuBLAS)
+```
+
 ## Reference
 
 - [通用图形处理器设计](https://book.douban.com/subject/35998320/)
