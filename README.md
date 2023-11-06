@@ -110,7 +110,7 @@ Throughput: 0.874 TFLOPS
 
 No improvement.
 
-### Make each thread calculate 1x32 elements
+### Make each thread calculate 1x32 elements (1D tiling)
 
 > it looks like we make 32 thread a 32xf32 vector,
 > and they do 32 times works for each row in the block.
@@ -129,6 +129,15 @@ matmul time: 347.733 ms
 Throughput: 3.162 TFLOPS 
     (21.443% Max)
     (38.429% cuBLAS)
+```
+
+### Make each thread calculate 8x8 elements (2D tiling)
+
+```
+matmul time: 170.000 ms
+Throughput: 6.468 TFLOPS 
+    (43.862% Max)
+    (78.606% cuBLAS)
 ```
 
 Let each thread directly write to global memory, can save 1/3 shared memory. No decrease in performance.

@@ -5,7 +5,9 @@
 #include <iostream>
 
 constexpr size_t N = 8192;
-auto constexpr BLK_N = 32;
+auto constexpr BLK_N = 8;
+auto constexpr THD_N = 8;
+auto constexpr BLK_SIZE = BLK_N * THD_N;
 
 static inline bool feq(float a, float b) { return abs(a - b) <= 1e-5f; }
 // use macro for both host and device
@@ -14,47 +16,65 @@ static inline bool feq(float a, float b) { return abs(a - b) <= 1e-5f; }
 
 // Kernel function to add the elements of two arrays
 __global__ void matmul(float *C, float *A, float *B) {
-  // each block has 32x1 threads, each thread computes 1x32 element
-  // a grid has N/32 blocks in x axis and N/32 blocks in y axis
-
-  __shared__ float sA[BLK_N][BLK_N];
-  __shared__ float sB[BLK_N][BLK_N];
-  float pB[BLK_N];
-  float pC[BLK_N] = {0.0f};
+  __shared__ float sA[BLK_SIZE][BLK_SIZE];
+  __shared__ float sB[BLK_SIZE][BLK_SIZE];
+  float pA[THD_N], pB[THD_N];
+  float pC[THD_N][THD_N] = {0.0f};
 
   auto const by = blockIdx.y;
   auto const bx = blockIdx.x;
 
-  auto const x = threadIdx.x;
+  auto const ty = threadIdx.y;
+  auto const tx = threadIdx.x;
 
-  for (auto bk = 0; bk < N / BLK_N; bk++) {
-    for (auto y = 0; y < BLK_N; y++) {
-      sA[y][x] = at(A, by * BLK_N + y, bk * BLK_N + x);
-    }
-
-    for (auto y = 0; y < BLK_N; y++) {
-      sB[y][x] = at(B, bk * BLK_N + y, bx * BLK_N + x);
-    }
-
-    // ensure pA/pB is loaded
-    __syncthreads();
-
-    for (auto y = 0; y < BLK_N; y++) {
-      pB[y] = sB[y][x];
-    }
-
-    for (auto tk = 0; tk < BLK_N; tk++) {
-      for (auto y = 0; y < BLK_N; y++) {
-        pC[y] += sA[y][tk] * pB[tk];
+  for (auto bk = 0; bk < N / BLK_SIZE; bk++) {
+    // load sA/sB
+    for (auto y = 0; y < THD_N; y++) {
+      for (auto x = 0; x < THD_N; x++) {
+        auto const gy = by * BLK_SIZE + ty * THD_N + y;
+        auto const gk = bk * BLK_SIZE + tx * THD_N + x;
+        sA[ty * THD_N + y][tx * THD_N + x] = at(A, gy, gk);
       }
     }
 
-    // ensure pA/pB is no longger needed
+    for (auto y = 0; y < THD_N; y++) {
+      for (auto x = 0; x < THD_N; x++) {
+        auto const gk = bk * BLK_SIZE + ty * THD_N + y;
+        auto const gx = bx * BLK_SIZE + tx * THD_N + x;
+        sB[ty * THD_N + y][tx * THD_N + x] = at(B, gk, gx);
+      }
+    }
+
+    // ensure sA/sB is loaded
+    __syncthreads();
+
+    for (auto tk = 0; tk < THD_N; tk++) {
+      // load pA/pB
+      for (auto y = 0; y < THD_N; y++) {
+        pA[y] = sA[ty * THD_N + y][tx * THD_N + tk];
+      }
+      for (auto x = 0; x < THD_N; x++) {
+        pB[x] = sB[ty * THD_N + tk][tx * THD_N + x];
+      }
+
+      // dot product
+      for (auto y = 0; y < THD_N; y++) {
+        for (auto x = 0; x < THD_N; x++) {
+          pC[y][x] += pA[y] * pB[x];
+        }
+      }
+    }
+
+    // ensure sA/sB is no longger needed
     __syncthreads();
   }
 
-  for (auto y = 0; y < BLK_N; y++) {
-    at(C, by * BLK_N + y, bx * BLK_N + x) += pC[y];
+  for (auto y = 0; y < THD_N; y++) {
+    for (auto x = 0; x < THD_N; x++) {
+      auto const gy = by * BLK_SIZE + ty * THD_N + y;
+      auto const gx = bx * BLK_SIZE + tx * THD_N + x;
+      at(C, gy, gx) += pC[y][x];
+    }
   }
 }
 
@@ -86,10 +106,10 @@ auto test() {
 
   cudaMemcpy(A, hA, MAT_SIZE, cudaMemcpyHostToDevice);
   cudaMemcpy(B, hB, MAT_SIZE, cudaMemcpyHostToDevice);
-  cudaMemset(C, 1, MAT_SIZE);
+  cudaMemset(C, 0, MAT_SIZE);
 
-  dim3 constexpr blockDim{BLK_N, 1, 1};
-  dim3 constexpr gridDim{N / BLK_N, N / BLK_N, 1};
+  dim3 constexpr blockDim{BLK_N, BLK_N, 1};
+  dim3 constexpr gridDim{N / BLK_SIZE, N / BLK_SIZE, 1};
 
   auto const matmul_begin = std::chrono::steady_clock::now();
 
