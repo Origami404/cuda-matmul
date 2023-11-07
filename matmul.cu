@@ -1,8 +1,10 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cublas_v2.h>
 #include <iomanip>
 #include <iostream>
+#include <random>
 
 constexpr size_t N = 8192;
 auto constexpr BLK_N = 8;
@@ -99,34 +101,84 @@ __global__ void matmul(float *C, float *A, float *B) {
 }
 
 // host copies of A, B, C
-float hA[N * N], hB[N * N], hC[N * N];
+float hA[N * N], hB[N * N], hC[N * N], std_hC[N * N];
+
+// host copies of A, B, C
+
+static inline float randf() {
+  static std::random_device rd{};
+  static std::mt19937 e{rd()};
+  static std::uniform_real_distribution<float> d{0.0f, 1.0f};
+  return d(e);
+}
+
+void mat_random(float *M, size_t n, size_t m) {
+  for (auto y = 0; y < n; y++) {
+    for (auto x = 0; x < m; x++) {
+      M[y * m + x] = randf();
+    }
+  }
+}
+
+bool mat_eq(float *A, float *B, size_t n, size_t m) {
+  for (auto y = 0; y < n; y++) {
+    for (auto x = 0; x < m; x++) {
+      if (!feq(A[y * m + x], B[y * m + x])) {
+        std::cout << "A[" << y << "][" << x << "] = " << A[y * m + x]
+                  << " != B[" << y << "][" << x << "] = " << B[y * m + x]
+                  << std::endl;
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+void calc_std() {
+  float *dA, *dB, *dC;
+
+  cublasHandle_t handle;
+  cublasCreate(&handle);
+
+  float alpha = 1.0f;
+  float beta = 0.0f;
+
+  cudaMalloc(&dA, sizeof(hA));
+  cudaMemcpy(dA, hA, sizeof(hA), cudaMemcpyHostToDevice);
+
+  cudaMalloc(&dB, sizeof(hB));
+  cudaMemcpy(dB, hB, sizeof(hB), cudaMemcpyHostToDevice);
+
+  cudaMalloc(&dC, sizeof(hC));
+  cudaMemset(dC, 0, sizeof(hC));
+  cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_T, N, N, N, &alpha, dA, N, dB, N,
+              &beta, dC, N);
+  cudaMemcpy(std_hC, dC, sizeof(hC), cudaMemcpyDeviceToHost);
+
+  cublasDestroy(handle);
+  cudaFree(dA);
+  cudaFree(dB);
+  cudaFree(dC);
+}
+
+void init() {
+  mat_random(hA, N, N);
+  mat_random(hB, N, N);
+  calc_std();
+}
 
 auto test() {
-  // init two matrixes
-  for (auto y = 0; y < N; y++) {
-    for (auto x = 0; x < N; x++) {
-      at(hA, y, x) = y == x ? 1.0f : 0.0f;
-    }
-  }
-
-  for (auto y = 0; y < N; y++) {
-    for (auto x = 0; x < N; x++) {
-      at(hB, y, x) = y == x ? 1.0f : 0.0f;
-    }
-  }
-
   // device copies of A, B, C
   float *A, *B, *C;
 
   // Allocate Unified Memory – accessible from CPU or GPU
-  auto constexpr MAT_SIZE = N * N * sizeof(float);
-  cudaMallocManaged(&A, MAT_SIZE);
-  cudaMallocManaged(&B, MAT_SIZE);
-  cudaMallocManaged(&C, MAT_SIZE);
+  cudaMalloc(&A, sizeof(hA));
+  cudaMalloc(&B, sizeof(hB));
+  cudaMalloc(&C, sizeof(hC));
 
-  cudaMemcpy(A, hA, MAT_SIZE, cudaMemcpyHostToDevice);
-  cudaMemcpy(B, hB, MAT_SIZE, cudaMemcpyHostToDevice);
-  cudaMemset(C, 0, MAT_SIZE);
+  cudaMemcpy(A, hA, sizeof(hA), cudaMemcpyHostToDevice);
+  cudaMemcpy(B, hB, sizeof(hB), cudaMemcpyHostToDevice);
+  cudaMemset(C, 0, sizeof(hC));
 
   dim3 constexpr blockDim{BLK_N, BLK_N, 1};
   dim3 constexpr gridDim{N / BLK_SIZE, N / BLK_SIZE, 1};
@@ -139,17 +191,12 @@ auto test() {
   cudaDeviceSynchronize();
   auto const matmul_end = std::chrono::steady_clock::now();
 
-  cudaMemcpy(hC, C, MAT_SIZE, cudaMemcpyDeviceToHost);
+  cudaMemcpy(hC, C, sizeof(hC), cudaMemcpyDeviceToHost);
 
   // Check for errors
-  for (auto i = 0; i < N; i++) {
-    for (auto j = 0; j < N; j++) {
-      auto const v = at(C, i, j);
-      if ((i == j && !feq(v, 1.0f)) || (i != j && !feq(v, 0.0f))) {
-        std::cout << "Error at (" << i << ", " << j << "): " << v << std::endl;
-        std::exit(EXIT_FAILURE);
-      }
-    }
+  if (!mat_eq(hC, std_hC, N, N)) {
+    std::cout << "Error!" << std::endl;
+    std::exit(EXIT_FAILURE);
   }
 
   // Free memory
@@ -157,15 +204,14 @@ auto test() {
   cudaFree(B);
   cudaFree(C);
 
-  auto const matmul_time =
-      std::chrono::duration_cast<std::chrono::milliseconds>(matmul_end -
-                                                            matmul_begin)
-          .count();
-
-  return matmul_time;
+  using std::chrono::duration_cast;
+  using std::chrono::milliseconds;
+  return duration_cast<milliseconds>(matmul_end - matmul_begin).count();
 }
 
 int main(void) {
+  init();
+
 #ifndef PROFILE
   auto constexpr WARMUP_N = 5;
   auto constexpr TEST_N = 30;
