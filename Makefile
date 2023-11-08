@@ -1,6 +1,6 @@
 .PHONE: clean build run
 
-NVCC_FLAGS = -std=c++17 -lcublas
+NVCC_FLAGS = -std=c++17 -lcublas -ccbin /usr/bin/g++-12
 
 clean:
 	rm -f matmul
