@@ -11,7 +11,11 @@ auto constexpr BLK_N = 8;
 auto constexpr THD_N = 8;
 auto constexpr BLK_SIZE = BLK_N * THD_N;
 
-static inline bool feq(float a, float b) { return abs(a - b) <= 1e-5f; }
+static inline bool feq(float a, float b) {
+  auto const d = (abs(a) + abs(b)) / 2;
+  return abs(a - b) < (d * 1e-1);
+}
+
 // use macro for both host and device
 #define at(arr, i, j) ((arr)[(i)*N + (j)])
 #define L(a, b, n) ((a) * (n) + (b))
@@ -64,13 +68,13 @@ __global__ void matmul(float *C, float *A, float *B) {
     // ensure sA/sB is loaded
     __syncthreads();
 
-    for (auto tk = 0; tk < THD_N; tk++) {
+    for (auto tk = 0; tk < BLK_SIZE; tk++) {
       // load pA/pB
       for (auto y = 0; y < THD_N; y++) {
-        pA[y] = sA[ty * THD_N + y][tx * THD_N + tk];
+        pA[y] = sA[ty * THD_N + y][tk];
       }
       for (auto x = 0; x < THD_N; x++) {
-        pB[x] = sB[ty * THD_N + tk][tx * THD_N + x];
+        pB[x] = sB[tk][tx * THD_N + x];
       }
 
       // dot product

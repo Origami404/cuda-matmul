@@ -133,22 +133,17 @@ Throughput: 3.162 TFLOPS
 
 ### Make each thread calculate 8x8 elements (2D tiling)
 
-```
-matmul time: 170.000 ms
-Throughput: 6.468 TFLOPS 
-    (43.862% Max)
-    (78.606% cuBLAS)
-```
+TODO: has bug
 
 Let each thread directly write to global memory, can save 1/3 shared memory. No decrease in performance.
 
 ### Vectorize gmem load/store
 
 ```
-matmul time: 123.633 ms
-Throughput: 8.893 TFLOPS 
-    (60.312% Max)
-    (108.086% cuBLAS)
+matmul time: 308.433 ms
+Throughput: 3.565 TFLOPS 
+    (24.176% Max)
+    (43.326% cuBLAS)
 ```
 
 ## Reference
