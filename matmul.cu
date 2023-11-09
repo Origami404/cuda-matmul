@@ -40,64 +40,18 @@ auto constexpr WM = TM * TM_CNT;
 static_assert(BN % WN == 0 && BK % WN == 0, "Unaligned WN");
 static_assert(BM % WM == 0 && BK % WM == 0, "Unaligned WM");
 
-struct DebugInfo {
-  int no;
-  float left, right;
-  int by, bx, bk;
-  int y, x, k;
-  dim3 threadIdx;
-  dim3 blockIdx;
-};
-
-std::ostream &operator<<(std::ostream &os, const dim3 &d) {
-  os << "(" << d.x << ", " << d.y << ", " << d.z << ")";
-  return os;
-}
-
-void print_debug_info(const DebugInfo &info) {
-  std::cout << "no: " << info.no << std::endl;
-  std::cout << "left: " << info.left << std::endl;
-  std::cout << "right: " << info.right << std::endl;
-  std::cout << "by: " << info.by << std::endl;
-  std::cout << "bx: " << info.bx << std::endl;
-  std::cout << "bk: " << info.bk << std::endl;
-  std::cout << "y: " << info.y << std::endl;
-  std::cout << "x: " << info.x << std::endl;
-  std::cout << "k: " << info.k << std::endl;
-  std::cout << "threadIdx: " << info.threadIdx << std::endl;
-  std::cout << "blockIdx: " << info.blockIdx << std::endl;
-}
-
-__global__ void matmul(float *C, float *A, float *B, DebugInfo *debug);
+__global__ void matmul(float *C, float *A, float *B);
 void run(float *dC, float *dA, float *dB) {
-  DebugInfo *deviceDebug;
-  cudaMalloc(&deviceDebug, sizeof(*deviceDebug));
-  cudaMemset(deviceDebug, 0, sizeof(*deviceDebug));
-
   auto constexpr THREAD_PRE_BLK = THREAD_PRE_WARP * WN_CNT * WM_CNT;
   auto constexpr GN = N / BN, GM = M / BM;
 
   dim3 constexpr blockDim{THREAD_PRE_BLK, 1, 1};
   dim3 constexpr gridDim{GN, GM, 1};
-  matmul<<<gridDim, blockDim>>>(dC, dA, dB, deviceDebug);
-
-  DebugInfo hostDebug;
-  cudaMemcpy(&hostDebug, deviceDebug, sizeof(*deviceDebug),
-             cudaMemcpyDeviceToHost);
-  cudaFree(deviceDebug);
-
-  if (hostDebug.no != 0) {
-    print_debug_info(hostDebug);
-    std::exit(EXIT_FAILURE);
-  }
+  matmul<<<gridDim, blockDim>>>(dC, dA, dB);
 }
 
 // Kernel function to add the elements of two arrays
-__global__ void matmul(float *C, float *A, float *B, DebugInfo *debug) {
-  debug->no = -1; // if -1, the function return unexpectedly
-  debug->threadIdx = threadIdx;
-  debug->blockIdx = blockIdx;
-
+__global__ void matmul(float *C, float *A, float *B) {
   // each block has some smem cache
   __shared__ float sAr[BK][BN];
   __shared__ float sB[BK][BM];
@@ -168,34 +122,6 @@ __global__ void matmul(float *C, float *A, float *B, DebugInfo *debug) {
 
     __syncthreads();
 
-    // check whether sA & sB is loaded correctly
-    if constexpr (false) {
-      for (auto y = 0; y < BN; y++) {
-        for (auto k = 0; k < BK; k++) {
-          if (sAr[k][y] != A[(by + y) * K + (bk + k)]) {
-            debug->no = 1;
-            debug->left = sAr[k][y];
-            debug->right = A[(by + y) * K + (bk + k)];
-            debug->by = by;
-            debug->bx = bx;
-            debug->bk = bk;
-            debug->y = y;
-            debug->k = k;
-            return;
-          }
-        }
-      }
-
-      for (auto k = 0; k < BK; k++) {
-        for (auto x = 0; x < BM; x++) {
-          if (sB[k][x] != B[(bk + k) * M + (bx + x)]) {
-            debug->no = 2;
-            return;
-          }
-        }
-      }
-    }
-
     { // compute C
       auto const ITER_Y = BN / (WN_CNT * WN), ITER_X = BM / (WM_CNT * WM);
       for (auto iter_y = 0; iter_y < ITER_Y; iter_y++) {
@@ -240,12 +166,8 @@ __global__ void matmul(float *C, float *A, float *B, DebugInfo *debug) {
         }
       }
     }
-
     __syncthreads();
   }
-
-  debug->no = 0;
-  return;
 }
 
 static inline bool feq(float a, float b) { return abs(a - b) <= 1e-2f; }
