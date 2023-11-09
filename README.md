@@ -146,6 +146,19 @@ Throughput: 3.565 TFLOPS
     (43.326% cuBLAS)
 ```
 
+## Time record (3rd try)
+
+### 3-layer tiling
+
+Block-Warp-Thread, with vectorized gmem load/store.
+
+```
+matmul time: 365.567 ms
+Throughput: 3.008 TFLOPS 
+    (20.397% Max)
+    (36.554% cuBLAS)
+```
+
 ## Reference
 
 - [通用图形处理器设计](https://book.douban.com/subject/35998320/)

@@ -17,8 +17,8 @@ auto constexpr K = 8192;
 
 //=================================================//
 // how many elements in a thread-tile
-auto constexpr TN = 2;
-auto constexpr TM = 4;
+auto constexpr TN = 4;
+auto constexpr TM = 8;
 
 // how to place thread-tiles in a warp-tile
 auto constexpr TN_CNT = 8;
@@ -31,14 +31,18 @@ auto constexpr WM_CNT = 2;
 // how many elements should a block-tile have
 auto constexpr BN = 64;
 auto constexpr BM = 64;
-auto constexpr BK = 32;
+auto constexpr BK = 64;
 //=================================================//
 
 // warp-tile size
 auto constexpr WN = TN * TN_CNT;
 auto constexpr WM = TM * TM_CNT;
-static_assert(BN % WN == 0 && BK % WN == 0, "Unaligned WN");
-static_assert(BM % WM == 0 && BK % WM == 0, "Unaligned WM");
+
+static_assert(BN % (WN * WN_CNT) == 0, "Unaligned BN");
+static_assert(BM % (WM * WM_CNT) == 0, "Unaligned BM");
+static_assert(BK % (WN * WN_CNT) == 0 && BK % (WM * WM_CNT) == 0,
+              "Unaligned BK");
+static_assert(WM % 4 == 0, "WM should be multiple of 4 to use vectorized load");
 
 __global__ void matmul(float *C, float *A, float *B);
 void run(float *dC, float *dA, float *dB) {
@@ -46,7 +50,7 @@ void run(float *dC, float *dA, float *dB) {
   auto constexpr GN = N / BN, GM = M / BM;
 
   dim3 constexpr blockDim{THREAD_PRE_BLK, 1, 1};
-  dim3 constexpr gridDim{GN, GM, 1};
+  dim3 constexpr gridDim{GM, GN, 1};
   matmul<<<gridDim, blockDim>>>(dC, dA, dB);
 }
 
@@ -55,6 +59,7 @@ __global__ void matmul(float *C, float *A, float *B) {
   // each block has some smem cache
   __shared__ float sAr[BK][BN];
   __shared__ float sB[BK][BM];
+  static_assert(sizeof(sAr) + sizeof(sB) <= 48 * 1024, "smem overflow");
 
   // each thread has some register cache
   float pA[TN], pB[TM];
@@ -90,11 +95,15 @@ __global__ void matmul(float *C, float *A, float *B) {
           auto const wx = (iter_x * WM_CNT + wx_idx) * WM;
 
           for (auto ey = 0; ey < TN; ey++) {
-            for (auto ex = 0; ex < TM; ex++) {
+            for (auto ex = 0; ex < TM; ex += 4) {
               auto const sy = wy + ty + ey;
               auto const sx = wx + tx + ex;
-
-              sAr[sx][sy] = A[(by + sy) * K + (bk + sx)];
+              auto const t =
+                  *reinterpret_cast<float4 *>(&A[(by + sy) * K + (bk + sx)]);
+              sAr[sx + 0][sy] = t.x;
+              sAr[sx + 1][sy] = t.y;
+              sAr[sx + 2][sy] = t.z;
+              sAr[sx + 3][sy] = t.w;
             }
           }
         }
@@ -109,11 +118,11 @@ __global__ void matmul(float *C, float *A, float *B) {
           auto const wx = (iter_x * WM_CNT + wx_idx) * WM;
 
           for (auto ey = 0; ey < TN; ey++) {
-            for (auto ex = 0; ex < TM; ex++) {
+            for (auto ex = 0; ex < TM; ex += 4) {
               auto const sy = wy + ty + ey;
               auto const sx = wx + tx + ex;
-
-              sB[sy][sx] = B[(bk + sy) * M + (bx + sx)];
+              *reinterpret_cast<float4 *>(&sB[sy][sx]) =
+                  *reinterpret_cast<float4 *>(&B[(bk + sy) * M + (bx + sx)]);
             }
           }
         }
