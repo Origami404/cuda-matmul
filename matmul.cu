@@ -6,108 +6,247 @@
 #include <iostream>
 #include <random>
 
-constexpr size_t N = 8192;
-auto constexpr BLK_N = 8;
-auto constexpr THD_N = 8;
-auto constexpr BLK_SIZE = BLK_N * THD_N;
+// just a constant
+auto constexpr THREAD_PRE_WARP = 32;
 
-static inline bool feq(float a, float b) {
-  auto const d = (abs(a) + abs(b)) / 2;
-  return abs(a - b) < (d * 1e-1);
-}
+// how many elements (float)
+auto constexpr N = 8192;
+auto constexpr M = 8192;
+auto constexpr K = 8192;
+// a N*K @ K*M matrix-matrix multiplication
 
-// use macro for both host and device
-#define at(arr, i, j) ((arr)[(i)*N + (j)])
-#define L(a, b, n) ((a) * (n) + (b))
+// how many blocks in a grid
+
+// how many elements in a thread-tile
+auto constexpr TN = 2;
+auto constexpr TM = 4;
+
+// how many iters should a warp do for a warp-tile
+auto constexpr TN_ITER = 2;
+auto constexpr TM_ITER = 2;
+// how many thread should a warp have
+auto constexpr TN_CNT = 8;
+auto constexpr TM_CNT = 4;
+static_assert(TN_CNT * TM_CNT == THREAD_PRE_WARP, "");
+// how many elements a warp-tile has
+auto constexpr WN = TN_ITER * TN_CNT * TN;
+auto constexpr WM = TM_ITER * TM_CNT * TM;
+
+// how many elements should a block-tile have
+auto constexpr BN = 64;
+auto constexpr BM = 64;
+auto constexpr BK = 32;
+
+static_assert(BK >= WN && BK >= WM, "BK too small");
+auto constexpr SMEM_SIZE = (BN * BK + BK * BM) * 4;
+auto constexpr SMEM_MAX = 48 * 1024;
+static_assert(SMEM_SIZE <= SMEM_MAX, "smem overflow");
+
+// how many warp-tiles should a block have
+auto constexpr WN_CNT = BN / WN;
+auto constexpr WM_CNT = BM / WM;
+// how many warps a block has,
+// it should <= max active warps per SM, so SM can schedule them all.
+auto constexpr WARP_PRE_BLK = WN_CNT * WM_CNT;
+// it should <= max threads per block
+auto constexpr THREAD_PRE_BLK = WARP_PRE_BLK * THREAD_PRE_WARP;
+
+// how many block-tiles should a grid have
+auto constexpr GN = N / BN;
+auto constexpr GM = M / BM;
+
+// theory metrics
+auto constexpr BLK_PER_SM = SMEM_MAX / SMEM_SIZE;
+auto constexpr BLK_CNT = GN * GM;
 
 // Kernel function to add the elements of two arrays
-__global__ void matmul(float *C, float *A, float *B) {
-  __shared__ float sA[BLK_SIZE][BLK_SIZE];
-  __shared__ float sB[BLK_SIZE][BLK_SIZE];
-  float pA[THD_N], pB[THD_N];
-  float pC[THD_N][THD_N] = {0.0f};
+__global__ void matmul(float *C, float *A, float *B, int *debug) {
+  *debug = -1; // if -1, the function return unexpectedly
 
-  auto const by = blockIdx.y;
-  auto const bx = blockIdx.x;
+  auto const thread_id = threadIdx.x;
 
-  auto const ty = threadIdx.y;
-  auto const tx = threadIdx.x;
+  // each block has some smem cache
+  __shared__ float sAr[BK][BN];
+  __shared__ float sB[BK][BM];
 
-  for (auto bk = 0; bk < N / BLK_SIZE; bk++) {
-    // load sA/sB
-    for (auto y = 0; y < THD_N; y++) {
-      for (auto x = 0; x < THD_N; x += 4) {
-        auto const gy = by * BLK_SIZE + ty * THD_N + y;
-        auto const gk = bk * BLK_SIZE + tx * THD_N + x;
-        float4 const t = *reinterpret_cast<float4 const *>(&at(A, gy, gk));
+  // each thread has some register cache
+  float pA[TN][BK];
+  float pB[BK][TM];
+  float pC[TN][TM];
 
-        auto const sy = ty * THD_N + y;
-        auto const sx = tx * THD_N + x;
-        sA[sy][sx + 0] = t.x;
-        sA[sy][sx + 1] = t.y;
-        sA[sy][sx + 2] = t.z;
-        sA[sy][sx + 3] = t.w;
-      }
-    }
+  for (auto bk_idx = 0; bk_idx < K / BK; bk_idx++) {
+    // implicitly, we have two by/bx for loops here
+    auto const by_idx = blockIdx.y;
+    auto const bx_idx = blockIdx.x;
 
-    for (auto y = 0; y < THD_N; y++) {
-      for (auto x = 0; x < THD_N; x += 4) {
-        auto const gk = bk * BLK_SIZE + ty * THD_N + y;
-        auto const gx = bx * BLK_SIZE + tx * THD_N + x;
-        float4 const t = *reinterpret_cast<float4 const *>(&at(B, gk, gx));
+    // load A[by_idx * BN ...][bk_idx * BK ...] to sA[...][...]
+    // load B[bk_idx * BK ...][bx_idx * BM ...] to sB[...][...]
+    auto const by = by_idx * BN;
+    auto const bx = bx_idx * BM;
+    auto const bk = bk_idx * BK;
 
-        auto const sy = ty * THD_N + y;
-        auto const sx = tx * THD_N + x;
-        sB[sy][sx + 0] = t.x;
-        sB[sy][sx + 1] = t.y;
-        sB[sy][sx + 2] = t.z;
-        sB[sy][sx + 3] = t.w;
-      }
-    }
+    // implicitly, we have two wy/wx for loops here
+    auto const warp_id = thread_id / THREAD_PRE_WARP;
+    auto const wy_idx = warp_id / WM_CNT;
+    auto const wx_idx = warp_id % WM_CNT;
+    // sA[wy_idx * WN ...][wx_idx * WM ...]
+    // sB[wx_idx * WM ...][wy_idx * WN ...]
 
-    // ensure sA/sB is loaded
-    __syncthreads();
+    auto const wy = wy_idx * WN;
+    auto const wx = wx_idx * WM;
 
-    for (auto tk = 0; tk < BLK_SIZE; tk++) {
-      // load pA/pB
-      for (auto y = 0; y < THD_N; y++) {
-        pA[y] = sA[ty * THD_N + y][tk];
-      }
-      for (auto x = 0; x < THD_N; x++) {
-        pB[x] = sB[tk][tx * THD_N + x];
-      }
+    // each thread should do TN_CNT * TM_CNT tiles
+    auto const thread_wid = thread_id % THREAD_PRE_WARP;
+    auto const thread_wid_y = thread_wid / TM_CNT;
+    auto const thread_wid_x = thread_wid % TM_CNT;
 
-      // dot product
-      for (auto y = 0; y < THD_N; y++) {
-        for (auto x = 0; x < THD_N; x++) {
-          pC[y][x] += pA[y] * pB[x];
+    // load sA
+    static_assert(BM % BK == 0 && TM_ITER % (BM / BK) == 0, "");
+    auto constexpr TM_LOAD_ITER = TM_ITER / (BM / BK);
+    auto const wxk = wx_idx * (TM_LOAD_ITER * TM_CNT * TM);
+
+    for (auto ty_idx = 0; ty_idx < TN_ITER; ty_idx++) {
+      for (auto tk_idx = 0; tk_idx < TM_LOAD_ITER; tk_idx++) {
+        // tiles begins at (tk, tx)
+        auto const ty = (ty_idx * TN_CNT + thread_wid_y) * TN;
+        auto const tk = (tk_idx * TM_CNT + thread_wid_x) * TM;
+
+        for (auto ey = 0; ey <= TN; ey++) {
+          for (auto ex = 0; ex <= TM; ex++) {
+            auto const sy = wy + ty + ey;
+            auto const sk = wxk + tk + ex;
+            sAr[sk][sy] = A[(by + sy) * K + (bk + sk)];
+          }
         }
       }
     }
 
-    // ensure sA/sB is no longger needed
+    // load sB
+    static_assert(BN % BK == 0 && TN_ITER % (BN / BK) == 0, "");
+    auto constexpr TN_LOAD_ITER = TN_ITER / (BN / BK);
+    auto const wyk = wy_idx * (TN_LOAD_ITER * TN_CNT * TN);
+
+    for (auto tk_idx = 0; tk_idx < TN_LOAD_ITER; tk_idx++) {
+      for (auto tx_idx = 0; tx_idx < TM_ITER; tx_idx++) {
+        // tiles begins at (ty, tx)
+        auto const tk = (tk_idx * TN_CNT + thread_wid_y) * TN;
+        auto const tx = (tx_idx * TM_CNT + thread_wid_x) * TM;
+
+        for (auto ey = 0; ey < TN; ey++) {
+          for (auto ex = 0; ex < TM; ex++) {
+            auto const sk = wyk + tk + ey;
+            auto const sx = wx + tx + ex;
+            sB[sk][sx] = B[(bk + sk) * M + (bx + sx)];
+          }
+        }
+      }
+    }
+
+    __syncthreads();
+
+    if constexpr (true) {
+      // check whether sA & sB is loaded correctly
+      for (auto y = 0; y < BN; y++) {
+        for (auto k = 0; k < BK; k++) {
+          if (sAr[k][y] != A[(by + y) * K + k]) {
+            *debug = 1;
+            return;
+          }
+        }
+      }
+
+      for (auto k = 0; k < BK; k++) {
+        for (auto x = 0; x < BM; x++) {
+          if (sB[k][x] != B[(bk + k) * M + (bx + x)]) {
+            *debug = 2;
+            return;
+          }
+        }
+      }
+    }
+
+    // for each warp iter, do k-times dot product
+    for (auto ty_idx = 0; ty_idx < TN_ITER; ty_idx++) {
+      for (auto tx_idx = 0; tx_idx < TM_ITER; tx_idx++) {
+        // tiles begins at (ty, tx)
+        auto const ty = (ty_idx * TN_ITER + thread_wid_y) * TN;
+        auto const tx = (tx_idx * TM_ITER + thread_wid_x) * TM;
+
+        // clear pC
+        for (auto ey = 0; ey < TN; ey++) {
+          for (auto ex = 0; ex < TM; ex++) {
+            pC[ey][ex] = 0.0f;
+          }
+        }
+
+        // load pA
+        for (auto k = 0; k < BK; k++) {
+          for (auto ey = 0; ey < TN; ey++) {
+            auto const sy = wy + ty + ey;
+            pA[ey][k] = sAr[k][sy];
+          }
+        }
+
+        // load pB
+        for (auto k = 0; k < BK; k++) {
+          for (auto ex = 0; ex < TM; ex++) {
+            auto const sx = wx + tx + ex;
+            pB[k][ex] = sB[k][sx];
+          }
+        }
+
+        // do dot product
+        for (auto ey = 0; ey < TN; ey++) {
+          for (auto ex = 0; ex < TM; ex++) {
+            // k-times dot product
+            for (auto k = 0; k < BK; k++) {
+              pC[ey][ex] += pA[ey][k] * pB[k][ex];
+            }
+          }
+        }
+
+        // store pC
+        for (auto ey = 0; ey < TN; ey++) {
+          for (auto ex = 0; ex < TM; ex++) {
+            auto const gy = by + wy + ty + ey;
+            auto const gx = bx + wx + tx + ex;
+            C[gy * M + gx] += pC[ey][ex];
+          }
+        }
+      }
+    }
+
     __syncthreads();
   }
 
-  for (auto y = 0; y < THD_N; y++) {
-    for (auto x = 0; x < THD_N; x += 4) {
-      auto const gy = by * BLK_SIZE + ty * THD_N + y;
-      auto const gx = bx * BLK_SIZE + tx * THD_N + x;
-      float4 *gtp = reinterpret_cast<float4 *>(&at(C, gy, gx));
-      float4 gt = *gtp;
-      gt.x += pC[y][x + 0];
-      gt.y += pC[y][x + 1];
-      gt.z += pC[y][x + 2];
-      gt.w += pC[y][x + 3];
-      *gtp = gt;
-    }
+  *debug = 0;
+  return;
+}
+
+void run(float *dC, float *dA, float *dB) {
+  int *deviceDebug;
+  cudaMalloc(&deviceDebug, sizeof(int));
+  cudaMemset(deviceDebug, 0, sizeof(int));
+
+  dim3 constexpr blockDim{THREAD_PRE_BLK, 1, 1};
+  dim3 constexpr gridDim{GN, GM, 1};
+  matmul<<<gridDim, blockDim>>>(dC, dA, dB, deviceDebug);
+
+  int hostDebug;
+  cudaMemcpy(&hostDebug, deviceDebug, sizeof(int), cudaMemcpyDeviceToHost);
+  cudaFree(deviceDebug);
+
+  if (hostDebug != 0) {
+    std::cout << "Error debug: " << hostDebug << std::endl;
+    std::exit(EXIT_FAILURE);
   }
 }
 
-// host copies of A, B, C
-float hA[N * N], hB[N * N], hC[N * N], std_hC[N * N];
+static inline bool feq(float a, float b) { return abs(a - b) <= 1e-5f; }
 
 // host copies of A, B, C
+float hA[N * K], hB[K * M], hC[N * M], std_hC[N * M];
+float *dA, *dB, *dC;
 
 static inline float randf() {
   static std::random_device rd{};
@@ -155,7 +294,7 @@ void calc_std() {
 
   cudaMalloc(&dC, sizeof(hC));
   cudaMemset(dC, 0, sizeof(hC));
-  cublasSgemm(handle, CUBLAS_OP_T, CUBLAS_OP_T, N, N, N, &alpha, dA, N, dB, N,
+  cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, N, M, K, &alpha, dA, N, dB, K,
               &beta, dC, N);
   cudaMemcpy(std_hC, dC, sizeof(hC), cudaMemcpyDeviceToHost);
 
@@ -166,8 +305,8 @@ void calc_std() {
 }
 
 void init() {
-  mat_random(hA, N, N);
-  mat_random(hB, N, N);
+  mat_random(hA, N, K);
+  mat_random(hB, K, M);
   calc_std();
 }
 
@@ -184,13 +323,8 @@ auto test() {
   cudaMemcpy(B, hB, sizeof(hB), cudaMemcpyHostToDevice);
   cudaMemset(C, 0, sizeof(hC));
 
-  dim3 constexpr blockDim{BLK_N, BLK_N, 1};
-  dim3 constexpr gridDim{N / BLK_SIZE, N / BLK_SIZE, 1};
-
   auto const matmul_begin = std::chrono::steady_clock::now();
-
-  matmul<<<gridDim, blockDim>>>(C, A, B);
-
+  run(C, A, B);
   // Wait for GPU to finish before accessing on host
   cudaDeviceSynchronize();
   auto const matmul_end = std::chrono::steady_clock::now();
@@ -198,7 +332,7 @@ auto test() {
   cudaMemcpy(hC, C, sizeof(hC), cudaMemcpyDeviceToHost);
 
   // Check for errors
-  if (!mat_eq(hC, std_hC, N, N)) {
+  if (!mat_eq(hC, std_hC, N, M)) {
     std::cout << "Error!" << std::endl;
     std::exit(EXIT_FAILURE);
   }
@@ -215,6 +349,7 @@ auto test() {
 
 int main(void) {
   init();
+  std::cout << "Finish init" << std::endl;
 
 #ifndef PROFILE
   auto constexpr WARMUP_N = 5;
