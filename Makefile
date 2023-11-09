@@ -12,7 +12,7 @@ run: build
 	./matmul
 
 build-debug:
-	nvcc $(NVCC_FLAGS) -g -G -o matmul-debug matmul.cu
+	nvcc $(NVCC_FLAGS) -O0 -g -G -o matmul-debug matmul.cu
 
 build-profile:
 	nvcc $(NVCC_FLAGS) -DPROFILE -O2 -o matmul-profile matmul.cu
