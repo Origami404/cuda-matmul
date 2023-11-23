@@ -17,12 +17,12 @@ auto constexpr K = 8192;
 
 //=================================================//
 // how many elements in a thread-tile
-auto constexpr TN = 4;
-auto constexpr TM = 8;
+auto constexpr TN = 32;
+auto constexpr TM = 1;
 
 // how to place thread-tiles in a warp-tile
-auto constexpr TN_CNT = 8;
-auto constexpr TM_CNT = 4;
+auto constexpr TN_CNT = 1;
+auto constexpr TM_CNT = 32;
 
 // how to place warp-tiles in a block-tile
 auto constexpr WN_CNT = 2;
@@ -57,12 +57,11 @@ void run(float *dC, float *dA, float *dB) {
 // Kernel function to add the elements of two arrays
 __global__ void matmul(float *C, float *A, float *B) {
   // each block has some smem cache
-  __shared__ float sAr[BK][BN];
+  __shared__ float sA[BN][BK];
   __shared__ float sB[BK][BM];
-  static_assert(sizeof(sAr) + sizeof(sB) <= 48 * 1024, "smem overflow");
+  static_assert(sizeof(sA) + sizeof(sB) <= 48 * 1024, "smem overflow");
 
   // each thread has some register cache
-  float pA[TN], pB[TM];
   float pC[TN][TM];
 
   for (auto bk_idx = 0; bk_idx < K / BK; bk_idx++) {
@@ -95,15 +94,11 @@ __global__ void matmul(float *C, float *A, float *B) {
           auto const wx = (iter_x * WM_CNT + wx_idx) * WM;
 
           for (auto ey = 0; ey < TN; ey++) {
-            for (auto ex = 0; ex < TM; ex += 4) {
+            for (auto ex = 0; ex < TM; ex++) {
               auto const sy = wy + ty + ey;
               auto const sx = wx + tx + ex;
-              auto const t =
-                  *reinterpret_cast<float4 *>(&A[(by + sy) * K + (bk + sx)]);
-              sAr[sx + 0][sy] = t.x;
-              sAr[sx + 1][sy] = t.y;
-              sAr[sx + 2][sy] = t.z;
-              sAr[sx + 3][sy] = t.w;
+
+              sA[sy][sx] = A[(by + sy) * K + (bk + sx)];
             }
           }
         }
@@ -118,11 +113,11 @@ __global__ void matmul(float *C, float *A, float *B) {
           auto const wx = (iter_x * WM_CNT + wx_idx) * WM;
 
           for (auto ey = 0; ey < TN; ey++) {
-            for (auto ex = 0; ex < TM; ex += 4) {
+            for (auto ex = 0; ex < TM; ex++) {
               auto const sy = wy + ty + ey;
               auto const sx = wx + tx + ex;
-              *reinterpret_cast<float4 *>(&sB[sy][sx]) =
-                  *reinterpret_cast<float4 *>(&B[(bk + sy) * M + (bx + sx)]);
+
+              sB[sy][sx] = B[(bk + sy) * M + (bx + sx)];
             }
           }
         }
@@ -146,20 +141,12 @@ __global__ void matmul(float *C, float *A, float *B) {
           }
 
           for (auto k = 0; k < BK; k++) {
-            // load pA
-            for (auto ey = 0; ey < TN; ey++) {
-              auto const sy = wy + ty + ey;
-              pA[ey] = sAr[k][sy];
-            }
-            // load pB
-            for (auto ex = 0; ex < TM; ex++) {
-              auto const sx = wx + tx + ex;
-              pB[ex] = sB[k][sx];
-            }
-            // compute
             for (auto ey = 0; ey < TN; ey++) {
               for (auto ex = 0; ex < TM; ex++) {
-                pC[ey][ex] += pA[ey] * pB[ex];
+                auto const sy = wy + ty + ey;
+                auto const sx = wx + tx + ex;
+
+                pC[ey][ex] += sA[sy][k] * sB[k][sx];
               }
             }
           }
