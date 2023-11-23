@@ -159,6 +159,26 @@ Throughput: 3.008 TFLOPS
     (36.554% cuBLAS)
 ```
 
+### make each thread calculate 1x32 element
+
+Also removed vectorized gmem load/store
+
+```
+matmul time: 414.100 ms
+Throughput: 2.655 TFLOPS 
+    (18.007% Max)
+    (32.270% cuBLAS)
+```
+
+### put C in smem
+
+```
+matmul time: 296.567 ms
+Throughput: 3.707 TFLOPS 
+    (25.143% Max)
+    (45.059% cuBLAS)
+```
+
 ## Reference
 
 - [通用图形处理器设计](https://book.douban.com/subject/35998320/)

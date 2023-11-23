@@ -59,32 +59,54 @@ __global__ void matmul(float *C, float *A, float *B) {
   // each block has some smem cache
   __shared__ float sA[BN][BK];
   __shared__ float sB[BK][BM];
-  static_assert(sizeof(sA) + sizeof(sB) <= 48 * 1024, "smem overflow");
+  __shared__ float sC[BN][BM];
+  static_assert(sizeof(sA) + sizeof(sB) + sizeof(sC) <= 48 * 1024,
+                "smem overflow");
 
   // each thread has some register cache
   float pC[TN][TM];
 
+  // implicitly, we have two by/bx for loops here
+  auto const by_idx = blockIdx.y;
+  auto const bx_idx = blockIdx.x;
+
+  auto const by = by_idx * BN;
+  auto const bx = bx_idx * BM;
+
+  // implicitly, we have two wy/wx for loops here
+  auto const warp_id = threadIdx.x / THREAD_PRE_WARP;
+  auto const wy_idx = warp_id / WM_CNT;
+  auto const wx_idx = warp_id % WM_CNT;
+
+  // implicitly, we have two ty/tx for loops here
+  auto const thread_id = threadIdx.x % THREAD_PRE_WARP;
+  auto const ty_idx = thread_id / TM_CNT;
+  auto const tx_idx = thread_id % TM_CNT;
+
+  auto const ty = ty_idx * TN;
+  auto const tx = tx_idx * TM;
+
+  { // load sC
+    auto const ITER_Y = BN / (WN_CNT * WN), ITER_X = BM / (WM_CNT * WM);
+    for (auto iter_y = 0; iter_y < ITER_Y; iter_y++) {
+      for (auto iter_x = 0; iter_x < ITER_X; iter_x++) {
+        auto const wy = (iter_y * WN_CNT + wy_idx) * WN;
+        auto const wx = (iter_x * WM_CNT + wx_idx) * WM;
+
+        for (auto ey = 0; ey < TN; ey++) {
+          for (auto ex = 0; ex < TM; ex++) {
+            auto const sy = wy + ty + ey;
+            auto const sx = wx + tx + ex;
+            sC[sy][sx] = C[(by + sy) * M + bx + sx];
+          }
+        }
+      }
+    }
+  }
+  __syncthreads();
+
   for (auto bk_idx = 0; bk_idx < K / BK; bk_idx++) {
-    // implicitly, we have two by/bx for loops here
-    auto const by_idx = blockIdx.y;
-    auto const bx_idx = blockIdx.x;
-
-    auto const by = by_idx * BN;
-    auto const bx = bx_idx * BM;
     auto const bk = bk_idx * BK;
-
-    // implicitly, we have two wy/wx for loops here
-    auto const warp_id = threadIdx.x / THREAD_PRE_WARP;
-    auto const wy_idx = warp_id / WM_CNT;
-    auto const wx_idx = warp_id % WM_CNT;
-
-    // implicitly, we have two ty/tx for loops here
-    auto const thread_id = threadIdx.x % THREAD_PRE_WARP;
-    auto const ty_idx = thread_id / TM_CNT;
-    auto const tx_idx = thread_id % TM_CNT;
-
-    auto const ty = ty_idx * TN;
-    auto const tx = tx_idx * TM;
 
     { // load A to sA
       auto const ITER_Y = BN / (WN_CNT * WN), ITER_X = BK / (WM_CNT * WM);
@@ -156,13 +178,32 @@ __global__ void matmul(float *C, float *A, float *B) {
             for (auto ex = 0; ex < TM; ex++) {
               auto const sy = wy + ty + ey;
               auto const sx = wx + tx + ex;
-              C[(by + sy) * M + (bx + sx)] += pC[ey][ex];
+              sC[sy][sx] += pC[ey][ex];
             }
           }
         }
       }
     }
     __syncthreads();
+  }
+
+  __syncthreads();
+  { // store sC
+    auto const ITER_Y = BN / (WN_CNT * WN), ITER_X = BM / (WM_CNT * WM);
+    for (auto iter_y = 0; iter_y < ITER_Y; iter_y++) {
+      for (auto iter_x = 0; iter_x < ITER_X; iter_x++) {
+        auto const wy = (iter_y * WN_CNT + wy_idx) * WN;
+        auto const wx = (iter_x * WM_CNT + wx_idx) * WM;
+
+        for (auto ey = 0; ey < TN; ey++) {
+          for (auto ex = 0; ex < TM; ex++) {
+            auto const sy = wy + ty + ey;
+            auto const sx = wx + tx + ex;
+            C[(by + sy) * M + bx + sx] = sC[sy][sx];
+          }
+        }
+      }
+    }
   }
 }
 
