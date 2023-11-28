@@ -10,179 +10,19 @@
 auto constexpr THREAD_PRE_WARP = 32;
 
 // how many elements (float)
-auto constexpr N = 8192;
 auto constexpr M = 8192;
+auto constexpr N = 8192;
 auto constexpr K = 8192;
-// a N*K @ K*M matrix-matrix multiplication
+// a M*K @ K*N matrix-matrix multiplication
 
-//=================================================//
-// how many elements in a thread-tile
-auto constexpr TN = 4;
-auto constexpr TM = 8;
-
-// how to place thread-tiles in a warp-tile
-auto constexpr TN_CNT = 8;
-auto constexpr TM_CNT = 4;
-
-// how to place warp-tiles in a block-tile
-auto constexpr WN_CNT = 2;
-auto constexpr WM_CNT = 2;
-
-// how many elements should a block-tile have
-auto constexpr BN = 64;
-auto constexpr BM = 64;
-auto constexpr BK = 64;
-//=================================================//
-
-// warp-tile size
-auto constexpr WN = TN * TN_CNT;
-auto constexpr WM = TM * TM_CNT;
-
-static_assert(BN % (WN * WN_CNT) == 0, "Unaligned BN");
-static_assert(BM % (WM * WM_CNT) == 0, "Unaligned BM");
-static_assert(BK % (WN * WN_CNT) == 0 && BK % (WM * WM_CNT) == 0,
-              "Unaligned BK");
-static_assert(WM % 4 == 0, "WM should be multiple of 4 to use vectorized load");
-
-__global__ void matmul(float *C, float *A, float *B);
-void run(float *dC, float *dA, float *dB) {
-  auto constexpr THREAD_PRE_BLK = THREAD_PRE_WARP * WN_CNT * WM_CNT;
-  auto constexpr GN = N / BN, GM = M / BM;
-
-  dim3 constexpr blockDim{THREAD_PRE_BLK, 1, 1};
-  dim3 constexpr gridDim{GM, GN, 1};
-  matmul<<<gridDim, blockDim>>>(dC, dA, dB);
-}
-
-// Kernel function to add the elements of two arrays
-__global__ void matmul(float *C, float *A, float *B) {
-  // each block has some smem cache
-  __shared__ float sAr[BK][BN];
-  __shared__ float sB[BK][BM];
-  static_assert(sizeof(sAr) + sizeof(sB) <= 48 * 1024, "smem overflow");
-
-  // each thread has some register cache
-  float pA[TN], pB[TM];
-  float pC[TN][TM];
-
-  for (auto bk_idx = 0; bk_idx < K / BK; bk_idx++) {
-    // implicitly, we have two by/bx for loops here
-    auto const by_idx = blockIdx.y;
-    auto const bx_idx = blockIdx.x;
-
-    auto const by = by_idx * BN;
-    auto const bx = bx_idx * BM;
-    auto const bk = bk_idx * BK;
-
-    // implicitly, we have two wy/wx for loops here
-    auto const warp_id = threadIdx.x / THREAD_PRE_WARP;
-    auto const wy_idx = warp_id / WM_CNT;
-    auto const wx_idx = warp_id % WM_CNT;
-
-    // implicitly, we have two ty/tx for loops here
-    auto const thread_id = threadIdx.x % THREAD_PRE_WARP;
-    auto const ty_idx = thread_id / TM_CNT;
-    auto const tx_idx = thread_id % TM_CNT;
-
-    auto const ty = ty_idx * TN;
-    auto const tx = tx_idx * TM;
-
-    { // load A to sA
-      auto const ITER_Y = BN / (WN_CNT * WN), ITER_X = BK / (WM_CNT * WM);
-      for (auto iter_y = 0; iter_y < ITER_Y; iter_y++) {
-        for (auto iter_x = 0; iter_x < ITER_X; iter_x++) {
-          auto const wy = (iter_y * WN_CNT + wy_idx) * WN;
-          auto const wx = (iter_x * WM_CNT + wx_idx) * WM;
-
-          for (auto ey = 0; ey < TN; ey++) {
-            for (auto ex = 0; ex < TM; ex += 4) {
-              auto const sy = wy + ty + ey;
-              auto const sx = wx + tx + ex;
-              auto const t =
-                  *reinterpret_cast<float4 *>(&A[(by + sy) * K + (bk + sx)]);
-              sAr[sx + 0][sy] = t.x;
-              sAr[sx + 1][sy] = t.y;
-              sAr[sx + 2][sy] = t.z;
-              sAr[sx + 3][sy] = t.w;
-            }
-          }
-        }
-      }
-    }
-
-    { // load B to sB
-      auto const ITER_Y = BK / (WN_CNT * WN), ITER_X = BM / (WM_CNT * WM);
-      for (auto iter_y = 0; iter_y < ITER_Y; iter_y++) {
-        for (auto iter_x = 0; iter_x < ITER_X; iter_x++) {
-          auto const wy = (iter_y * WN_CNT + wy_idx) * WN;
-          auto const wx = (iter_x * WM_CNT + wx_idx) * WM;
-
-          for (auto ey = 0; ey < TN; ey++) {
-            for (auto ex = 0; ex < TM; ex += 4) {
-              auto const sy = wy + ty + ey;
-              auto const sx = wx + tx + ex;
-              *reinterpret_cast<float4 *>(&sB[sy][sx]) =
-                  *reinterpret_cast<float4 *>(&B[(bk + sy) * M + (bx + sx)]);
-            }
-          }
-        }
-      }
-    }
-
-    __syncthreads();
-
-    { // compute C
-      auto const ITER_Y = BN / (WN_CNT * WN), ITER_X = BM / (WM_CNT * WM);
-      for (auto iter_y = 0; iter_y < ITER_Y; iter_y++) {
-        for (auto iter_x = 0; iter_x < ITER_X; iter_x++) {
-          auto const wy = (iter_y * WN_CNT + wy_idx) * WN;
-          auto const wx = (iter_x * WM_CNT + wx_idx) * WM;
-
-          // clear pC
-          for (auto ey = 0; ey < TN; ey++) {
-            for (auto ex = 0; ex < TM; ex++) {
-              pC[ey][ex] = 0.0f;
-            }
-          }
-
-          for (auto k = 0; k < BK; k++) {
-            // load pA
-            for (auto ey = 0; ey < TN; ey++) {
-              auto const sy = wy + ty + ey;
-              pA[ey] = sAr[k][sy];
-            }
-            // load pB
-            for (auto ex = 0; ex < TM; ex++) {
-              auto const sx = wx + tx + ex;
-              pB[ex] = sB[k][sx];
-            }
-            // compute
-            for (auto ey = 0; ey < TN; ey++) {
-              for (auto ex = 0; ex < TM; ex++) {
-                pC[ey][ex] += pA[ey] * pB[ex];
-              }
-            }
-          }
-
-          // store pC
-          for (auto ey = 0; ey < TN; ey++) {
-            for (auto ex = 0; ex < TM; ex++) {
-              auto const sy = wy + ty + ey;
-              auto const sx = wx + tx + ex;
-              C[(by + sy) * M + (bx + sx)] += pC[ey][ex];
-            }
-          }
-        }
-      }
-    }
-    __syncthreads();
-  }
+void run(float *C, float *A, float *B) {
+  //
 }
 
 static inline bool feq(float a, float b) { return abs(a - b) <= 1e-2f; }
 
 // host copies of A, B, C
-float hA[N * K], hB[K * M], hC[N * M], std_hC[N * M];
+float hA[M * K], hB[K * N], hC[M * N], std_hC[M * N];
 float *dA, *dB, *dC;
 
 static inline float randf() {
@@ -231,8 +71,8 @@ void calc_std() {
 
   cudaMalloc(&dC, sizeof(hC));
   cudaMemset(dC, 0, sizeof(hC));
-  cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, N, M, K, &alpha, dB, N, dA, K,
-              &beta, dC, N);
+  cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, M, N, K, &alpha, dB, M, dA, K,
+              &beta, dC, M);
   cudaMemcpy(std_hC, dC, sizeof(hC), cudaMemcpyDeviceToHost);
 
   cublasDestroy(handle);
@@ -242,8 +82,8 @@ void calc_std() {
 }
 
 void init() {
-  mat_random(hA, N, K);
-  mat_random(hB, K, M);
+  mat_random(hA, M, K);
+  mat_random(hB, K, N);
   calc_std();
 }
 
@@ -269,7 +109,7 @@ auto test() {
   cudaMemcpy(hC, C, sizeof(hC), cudaMemcpyDeviceToHost);
 
   // Check for errors
-  if (!mat_eq(hC, std_hC, N, M)) {
+  if (!mat_eq(hC, std_hC, M, N)) {
     std::cout << "Error!" << std::endl;
     std::exit(EXIT_FAILURE);
   }
@@ -306,7 +146,7 @@ int main(void) {
 #endif
 
   // each cell needs N fma, and there are N * N cells
-  auto const matmul_tflops = 2.0 * N * M * K / matmul_time / 1e9;
+  auto const matmul_tflops = 2.0 * M * N * K / matmul_time / 1e9;
   auto constexpr theory_max_tflops = 14.7456;
   auto constexpr cublas_tflops = 8.228;
 
