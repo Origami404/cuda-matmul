@@ -159,9 +159,21 @@ Throughput: 3.008 TFLOPS
     (36.554% cuBLAS)
 ```
 
+## Time record (4th try)
+
+Use 128x128 block and BK=8
+
+```
+matmul time: 174.800 ms
+Throughput: 6.290 TFLOPS 
+    (42.658% Max)
+    (76.448% cuBLAS)
+```
+
 ## Reference
 
 - [通用图形处理器设计](https://book.douban.com/subject/35998320/)
 - [如何加速矩阵乘法——优化GEMM (CPU单线程篇)](https://renzibei.com/2021/06/30/optimize-gemm/)
 - [How to Optimize a CUDA Matmul Kernel for cuBLAS-like Performance: a Worklog](https://siboehm.com/articles/22/CUDA-MMM)
 - [CUDA C++ Best Practices Guide](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/index.html)
+- [传统 CUDA GEMM 不完全指北](https://zhuanlan.zhihu.com/p/584236348)
