@@ -161,13 +161,22 @@ Throughput: 3.008 TFLOPS
 
 ## Time record (4th try)
 
-Use 128x128 block and BK=8
+### Use 128x128 block and BK=8
 
 ```
 matmul time: 174.800 ms
 Throughput: 6.290 TFLOPS 
     (42.658% Max)
     (76.448% cuBLAS)
+```
+
+### Use warp tile
+
+```
+matmul time: 174.467 ms
+Throughput: 6.302 TFLOPS 
+    (42.739% Max)
+    (76.594% cuBLAS)
 ```
 
 ## Reference

@@ -37,7 +37,7 @@ __device__ __forceinline__ float4 *as_f4p(float *p) {
 __global__ void matmul(float *C, float *A, float *B) {
   static_assert(TM == TN && TN == BK && BK == 8, "use specified param");
 
-  __align__(16) __shared__ float sA[BK][BM + 4];
+  __align__(16) __shared__ float sA[BK][BM];
   __align__(16) __shared__ float sB[BK][BN];
 
   auto constexpr SMEM_USAGE = sizeof(sA) + sizeof(sB);
@@ -50,6 +50,47 @@ __global__ void matmul(float *C, float *A, float *B) {
   auto const tid = threadIdx.x;
   auto const by = blockIdx.y * BM;
   auto const bx = blockIdx.x * BN;
+
+  { // How to tile threads when computing gC to avoid bank conflict
+    /*
+     * gC                       2 warps
+     *   +--+--+--+--+--+--+--+--+  +-----------------------+
+     *   | 0| 1| 2| 3| 4| 5| 6| 7|  |32 ...                 |
+     *   +--+--+--+--+--+--+--+--+  |                       |
+     *   | 8| 9|10|11|12|13|14|15|  |                       |
+     *   +--+--+--+--+--+--+--+--+  |                       |
+     *   |16|17|18|`9|20|21|22|23|  |                       |
+     *   +--+--+--+--+--+--+--+--+  |                       |
+     *   |24|25|26|27|28|29|30|31|  |                     63|
+     * 4 +--+--+--+--+--+--+--+--+  +-----------------------+
+     *             .                          .
+     * w           .                          .
+     * a           .                          .
+     * r           .                          .
+     * p +-----------------------+  +-----------------------+
+     * s |                       |  |224 ...                |
+     *   |                       |  |                       |
+     *   |                       |  |                       |
+     *   |                       |  |                       |
+     *   |                       |  |                       |
+     *   |                       |  |                       |
+     *   |                       |  |                    255|
+     *   +-----------------------+  +-----------------------+
+     */
+  }
+
+  size_t const wid = tid / 32;
+  size_t const wy = (wid / 2) * (4 * TM);
+  size_t const wx = (wid % 2) * (8 * TN);
+
+  size_t const ttid = tid % 32;
+  size_t const ty = (ttid / 8) * TM;
+  size_t const tx = (ttid % 8) * TN;
+
+  size_t const sAy = wy + ty;
+  size_t const sBx = wx + tx;
+  size_t const Cy = by + wy + ty;
+  size_t const Cx = bx + wx + tx;
 
   for (auto bk = 0; bk < K; bk += BK) {
     { // load A to smem, and transpose
@@ -97,22 +138,10 @@ __global__ void matmul(float *C, float *A, float *B) {
     __syncthreads();
 
     for (size_t k = 0; k < BK; k++) {
-      /*
-       *                    128
-       *   sA   8                        8
-       *   +----------+-------------+---------+
-       *   |          |  ...        |         |
-       * 8 | t0  t16  +-------------+ t15 t31 |
-       *   | t32 t48  |             | t47 t63 |
-       *   | ... t224 +-------------+ ... t255|
-       *   |          |  ...        |         |
-       *   +----------+-------------+---------+
-       */
-      size_t const tm = tid / 16, tn = tid % 16;
-      *as_f4p(pA + 0) = *as_f4p(&sA[k][tm * TM + 0]);
-      *as_f4p(pA + 4) = *as_f4p(&sA[k][tm * TM + 4]);
-      *as_f4p(pB + 0) = *as_f4p(&sB[k][tn * TN + 0]);
-      *as_f4p(pB + 4) = *as_f4p(&sB[k][tn * TN + 4]);
+      *as_f4p(pA + 0) = *as_f4p(&sA[k][sAy + 0]);
+      *as_f4p(pA + 4) = *as_f4p(&sA[k][sAy + 4]);
+      *as_f4p(pB + 0) = *as_f4p(&sB[k][sBx + 0]);
+      *as_f4p(pB + 4) = *as_f4p(&sB[k][sBx + 4]);
 
 #pragma unroll
       for (size_t y = 0; y < TM; y++) {
@@ -127,13 +156,9 @@ __global__ void matmul(float *C, float *A, float *B) {
   }
 
   { // store pC back to gC
-    float *const gC = C + by * N + bx;
-    size_t const tm = tid / 16, tn = tid % 16;
-    float *const tC = gC + (tm * TM) * N + (tn * TN);
-
     for (size_t y = 0; y < TM; y++) {
       for (size_t x = 0; x < TN; x += 4) {
-        *as_f4p(tC + y * N + x) = *as_f4p(&pC[y][x]);
+        *as_f4p(C + (Cy + y) * N + (Cx + x)) = *as_f4p(&pC[y][x]);
       }
     }
   }
