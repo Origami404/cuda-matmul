@@ -153,16 +153,16 @@ static inline float randf() {
 }
 
 void mat_random(float *M, size_t n, size_t m) {
-  for (auto y = 0; y < n; y++) {
-    for (auto x = 0; x < m; x++) {
+  for (size_t y = 0; y < n; y++) {
+    for (size_t x = 0; x < m; x++) {
       M[y * m + x] = randf();
     }
   }
 }
 
 bool mat_eq(float *A, float *B, size_t n, size_t m) {
-  for (auto y = 0; y < n; y++) {
-    for (auto x = 0; x < m; x++) {
+  for (size_t y = 0; y < n; y++) {
+    for (size_t x = 0; x < m; x++) {
       if (!feq(A[y * m + x], B[y * m + x])) {
         std::cout << "A[" << y << "][" << x << "] = " << A[y * m + x]
                   << " != B[" << y << "][" << x << "] = " << B[y * m + x]
