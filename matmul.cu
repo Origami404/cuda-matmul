@@ -37,15 +37,15 @@ __device__ __forceinline__ float4 *as_f4p(float *p) {
 __global__ void matmul(float *C, float *A, float *B) {
   static_assert(TM == TN && TN == BK && BK == 8, "use specified param");
 
-  __align__(16) __shared__ float sA[BK][BM];
-  __align__(16) __shared__ float sB[BK][BN];
+  __shared__ float sA[BK][BM];
+  __shared__ float sB[BK][BN];
 
   auto constexpr SMEM_USAGE = sizeof(sA) + sizeof(sB);
   static_assert(SMEM_USAGE <= 48 * 1024, "smem overflow");
 
-  __align__(16) float pA[TM];
-  __align__(16) float pB[TN];
-  __align__(16) float pC[TM][TN] = {0.0f};
+  float pA[TM];
+  float pB[TN];
+  float pC[TM][TN] = {0.0f};
 
   auto const tid = threadIdx.x;
   auto const by = blockIdx.y * BM;
@@ -92,56 +92,59 @@ __global__ void matmul(float *C, float *A, float *B) {
   size_t const Cy = by + wy + ty;
   size_t const Cx = bx + wx + tx;
 
-  for (auto bk = 0; bk < K; bk += BK) {
-    { // load A to smem, and transpose
-      /*
-       *   gA    8            sA    128
-       *   +-----+-----+       +--+---------+---
-       *   | t0  | t1  |       |t0|...      |padding
-       *   +-----+-----+       |  |         |  |
-       * 1 | t2  | t3  |     8 +--+---------+--+
-       * 2 +-----+-----+       |t1|...      |padding
-       * 8 | t4  | t5  |       |  |         |  |
-       *   +-----+-----+       +--+---------+--+
-       *   | ... | ... |
-       *   |     |     |
-       *   +-----+-----+
-       *   |t254 |t255 |
-       *   +-----+-----+
-       */
-      // 由于有 4 个 padding, t0 和 t1 的 bank conflict 并不会很严重
-      float *gA = A + K * by + bk;
-      size_t tm = tid / 2, tn = tid % 2;
+  size_t Ay = tid / 2, Ax = (tid % 2) * 4;
+  size_t By = tid / 32, Bx = (tid % 32) * 4;
 
-      float4 const rA = *as_f4p(gA + tm * K + (tn * 4));
-      sA[tn * 4 + 0][tm] = rA.x;
-      sA[tn * 4 + 1][tm] = rA.y;
-      sA[tn * 4 + 2][tm] = rA.z;
-      sA[tn * 4 + 3][tm] = rA.w;
-    }
-    { // load B to smem directly
-      /*
-       *   gB       128
-       *   +-----+-----+----------+-----+
-       *   | t0  | t1  | ...      | t31 |
-       * 8 +-----+-----+----------+-----+
-       *   | ... |     |          |     |
-       *   +-----+-----+----------+-----+
-       *   | t224| t225| ...      | t255|
-       *   +-----+-----+----------+-----+
-       */
-      float *gB = B + N * bk + bx;
-      size_t tm = tid / 32, tn = tid % 32;
-      *as_f4p(&sB[tm][tn * 4]) = *as_f4p(gB + tm * N + (tn * 4));
-    }
+  for (auto bk = 0; bk < K; bk += BK) {
+    float *const gA = A + K * by + bk;
+    float *const gB = B + N * bk + bx;
+
+    float4 const rA = *as_f4p(gA + Ay * K + Ax);
+    float4 const rB = *as_f4p(gB + By * N + Bx);
+    // load A to smem, and transpose
+    /*
+     *   gA    8            sA    128
+     *   +-----+-----+       +--+---------+---
+     *   | t0  | t1  |       |t0|...      |padding
+     *   +-----+-----+       |  |         |  |
+     * 1 | t2  | t3  |     8 +--+---------+--+
+     * 2 +-----+-----+       |t1|...      |padding
+     * 8 | t4  | t5  |       |  |         |  |
+     *   +-----+-----+       +--+---------+--+
+     *   | ... | ... |
+     *   |     |     |
+     *   +-----+-----+
+     *   |t254 |t255 |
+     *   +-----+-----+
+     */
+    // 由于有 4 个 padding, t0 和 t1 的 bank conflict 并不会很严重
+
+    sA[Ax + 0][Ay] = rA.x;
+    sA[Ax + 1][Ay] = rA.y;
+    sA[Ax + 2][Ay] = rA.z;
+    sA[Ax + 3][Ay] = rA.w;
+
+    // load B to smem directly
+    /*
+     *   gB       128
+     *   +-----+-----+----------+-----+
+     *   | t0  | t1  | ...      | t31 |
+     * 8 +-----+-----+----------+-----+
+     *   | ... |     |          |     |
+     *   +-----+-----+----------+-----+
+     *   | t224| t225| ...      | t255|
+     *   +-----+-----+----------+-----+
+     */
+    *as_f4p(&sB[By][Bx]) = rB;
 
     __syncthreads();
 
     for (size_t k = 0; k < BK; k++) {
-      *as_f4p(pA + 0) = *as_f4p(&sA[k][sAy + 0]);
-      *as_f4p(pA + 4) = *as_f4p(&sA[k][sAy + 4]);
       *as_f4p(pB + 0) = *as_f4p(&sB[k][sBx + 0]);
       *as_f4p(pB + 4) = *as_f4p(&sB[k][sBx + 4]);
+
+      *as_f4p(pA + 0) = *as_f4p(&sA[k][sAy + 0]);
+      *as_f4p(pA + 4) = *as_f4p(&sA[k][sAy + 4]);
 
 #pragma unroll
       for (size_t y = 0; y < TM; y++) {
