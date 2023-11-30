@@ -179,6 +179,15 @@ Throughput: 6.302 TFLOPS
     (76.594% cuBLAS)
 ```
 
+### manully expanded float4 product
+
+```
+matmul time: 168.333 ms
+Throughput: 6.532 TFLOPS 
+    (44.296% Max)
+    (79.384% cuBLAS)
+```
+
 ## Reference
 
 - [通用图形处理器设计](https://book.douban.com/subject/35998320/)
