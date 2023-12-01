@@ -37,8 +37,8 @@ __device__ __forceinline__ float4 *as_f4p(float *p) {
 __global__ void matmul(float *C, float *A, float *B) {
   static_assert(TM == TN && TN == BK && BK == 8, "use specified param");
 
-  __shared__ float sA[BK][BM];
-  __shared__ float sB[BK][BN];
+  __shared__ float sA[BK * BM];
+  __shared__ float sB[BK * BN];
 
   auto constexpr SMEM_USAGE = sizeof(sA) + sizeof(sB);
   static_assert(SMEM_USAGE <= 48 * 1024, "smem overflow");
@@ -117,10 +117,10 @@ __global__ void matmul(float *C, float *A, float *B) {
      */
     // 由于有 4 个 padding, t0 和 t1 的 bank conflict 并不会很严重
 
-    sA[Ax + 0][Ay] = rA.x;
-    sA[Ax + 1][Ay] = rA.y;
-    sA[Ax + 2][Ay] = rA.z;
-    sA[Ax + 3][Ay] = rA.w;
+    sA[(Ax + 0) * BM + Ay] = rA.x;
+    sA[(Ax + 1) * BM + Ay] = rA.y;
+    sA[(Ax + 2) * BM + Ay] = rA.z;
+    sA[(Ax + 3) * BM + Ay] = rA.w;
 
     // load B to smem directly
     /*
@@ -133,16 +133,16 @@ __global__ void matmul(float *C, float *A, float *B) {
      *   | t224| t225| ...      | t255|
      *   +-----+-----+----------+-----+
      */
-    *as_f4p(&sB[By][Bx]) = rB;
+    *as_f4p(&sB[By * BN + Bx]) = rB;
 
     __syncthreads();
 
     for (size_t k = 0; k < BK; k++) {
-      float4 const b0 = *as_f4p(&sB[k][sBx + 0]);
-      float4 const b4 = *as_f4p(&sB[k][sBx + 4]);
+      float4 const b0 = *as_f4p(&sB[k * BN + (sBx + 0)]);
+      float4 const b4 = *as_f4p(&sB[k * BN + (sBx + 4)]);
 
-      float4 const a0 = *as_f4p(&sA[k][sAy + 0]);
-      float4 const a4 = *as_f4p(&sA[k][sAy + 4]);
+      float4 const a0 = *as_f4p(&sA[k * BM + (sAy + 0)]);
+      float4 const a4 = *as_f4p(&sA[k * BM + (sAy + 4)]);
 
       pC[0][0] += a0.x * b0.x;
       pC[0][1] += a0.x * b0.y;
@@ -332,8 +332,8 @@ int main(void) {
   std::cout << "Finish init" << std::endl;
 
 #ifndef PROFILE
-  auto constexpr WARMUP_N = 5;
-  auto constexpr TEST_N = 30;
+  auto constexpr WARMUP_N = 10;
+  auto constexpr TEST_N = 40;
 
   for (auto i = 0; i < WARMUP_N; i++) {
     test();
