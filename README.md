@@ -188,6 +188,15 @@ Throughput: 6.532 TFLOPS
     (79.384% cuBLAS)
 ```
 
+### adjust thread placement in  a warp tile 
+
+```
+matmul time: 163.075 ms
+Throughput: 6.742 TFLOPS 
+    (45.725% Max)
+    (81.944% cuBLAS)
+```
+
 ## Reference
 
 - [通用图形处理器设计](https://book.douban.com/subject/35998320/)
