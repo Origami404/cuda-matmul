@@ -43,6 +43,7 @@ __global__ void matmul(float *C, float *A, float *B) {
   auto constexpr SMEM_USAGE = sizeof(sA) + sizeof(sB);
   static_assert(SMEM_USAGE <= 48 * 1024, "smem overflow");
 
+  __align__(16) float pA[TM], pB[TN];
   float pC[TM][TN] = {0.0f};
 
   auto const tid = threadIdx.x;
@@ -138,76 +139,19 @@ __global__ void matmul(float *C, float *A, float *B) {
     __syncthreads();
 
     for (size_t k = 0; k < BK; k++) {
-      float4 const b0 = *as_f4p(&sB[k * BN + (sBx + 0)]);
-      float4 const b4 = *as_f4p(&sB[k * BN + (sBx + 4)]);
+      *as_f4p(pB + 0) = *as_f4p(&sB[k * BN + (sBx + 0)]);
+      *as_f4p(pB + 4) = *as_f4p(&sB[k * BN + (sBx + 4)]);
 
-      float4 const a0 = *as_f4p(&sA[k * BM + (sAy + 0)]);
-      float4 const a4 = *as_f4p(&sA[k * BM + (sAy + 4)]);
+      *as_f4p(pA + 0) = *as_f4p(&sA[k * BM + (sAy + 0)]);
+      *as_f4p(pA + 4) = *as_f4p(&sA[k * BM + (sAy + 4)]);
 
-      pC[0][0] += a0.x * b0.x;
-      pC[0][1] += a0.x * b0.y;
-      pC[0][2] += a0.x * b0.z;
-      pC[0][3] += a0.x * b0.w;
-      pC[0][4] += a0.x * b4.x;
-      pC[0][5] += a0.x * b4.y;
-      pC[0][6] += a0.x * b4.z;
-      pC[0][7] += a0.x * b4.w;
-      pC[1][0] += a0.y * b0.x;
-      pC[1][1] += a0.y * b0.y;
-      pC[1][2] += a0.y * b0.z;
-      pC[1][3] += a0.y * b0.w;
-      pC[1][4] += a0.y * b4.x;
-      pC[1][5] += a0.y * b4.y;
-      pC[1][6] += a0.y * b4.z;
-      pC[1][7] += a0.y * b4.w;
-      pC[2][0] += a0.z * b0.x;
-      pC[2][1] += a0.z * b0.y;
-      pC[2][2] += a0.z * b0.z;
-      pC[2][3] += a0.z * b0.w;
-      pC[2][4] += a0.z * b4.x;
-      pC[2][5] += a0.z * b4.y;
-      pC[2][6] += a0.z * b4.z;
-      pC[2][7] += a0.z * b4.w;
-      pC[3][0] += a0.w * b0.x;
-      pC[3][1] += a0.w * b0.y;
-      pC[3][2] += a0.w * b0.z;
-      pC[3][3] += a0.w * b0.w;
-      pC[3][4] += a0.w * b4.x;
-      pC[3][5] += a0.w * b4.y;
-      pC[3][6] += a0.w * b4.z;
-      pC[3][7] += a0.w * b4.w;
-      pC[4][0] += a4.x * b0.x;
-      pC[4][1] += a4.x * b0.y;
-      pC[4][2] += a4.x * b0.z;
-      pC[4][3] += a4.x * b0.w;
-      pC[4][4] += a4.x * b4.x;
-      pC[4][5] += a4.x * b4.y;
-      pC[4][6] += a4.x * b4.z;
-      pC[4][7] += a4.x * b4.w;
-      pC[5][0] += a4.y * b0.x;
-      pC[5][1] += a4.y * b0.y;
-      pC[5][2] += a4.y * b0.z;
-      pC[5][3] += a4.y * b0.w;
-      pC[5][4] += a4.y * b4.x;
-      pC[5][5] += a4.y * b4.y;
-      pC[5][6] += a4.y * b4.z;
-      pC[5][7] += a4.y * b4.w;
-      pC[6][0] += a4.z * b0.x;
-      pC[6][1] += a4.z * b0.y;
-      pC[6][2] += a4.z * b0.z;
-      pC[6][3] += a4.z * b0.w;
-      pC[6][4] += a4.z * b4.x;
-      pC[6][5] += a4.z * b4.y;
-      pC[6][6] += a4.z * b4.z;
-      pC[6][7] += a4.z * b4.w;
-      pC[7][0] += a4.w * b0.x;
-      pC[7][1] += a4.w * b0.y;
-      pC[7][2] += a4.w * b0.z;
-      pC[7][3] += a4.w * b0.w;
-      pC[7][4] += a4.w * b4.x;
-      pC[7][5] += a4.w * b4.y;
-      pC[7][6] += a4.w * b4.z;
-      pC[7][7] += a4.w * b4.w;
+#pragma unroll
+      for (size_t y = 0; y < TM; y++) {
+#pragma unroll
+        for (size_t x = 0; x < TN; x++) {
+          pC[y][x] += pA[y] * pB[x];
+        }
+      }
     }
 
     __syncthreads();
