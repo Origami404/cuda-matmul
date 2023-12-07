@@ -197,6 +197,15 @@ Throughput: 6.742 TFLOPS
     (81.944% cuBLAS)
 ```
 
+### Increase BK size
+
+```
+matmul time: 149.475 ms
+Throughput: 7.356 TFLOPS 
+    (49.885% Max)
+    (89.400% cuBLAS)
+```
+
 ## Reference
 
 - [通用图形处理器设计](https://book.douban.com/subject/35998320/)

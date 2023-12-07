@@ -17,11 +17,12 @@ auto constexpr TN = 8;
 
 auto constexpr BM = 128;
 auto constexpr BN = 128;
-auto constexpr BK = 8;
+auto constexpr BK = 16;
 
 auto constexpr TM_CNT = 16;
 auto constexpr TN_CNT = 16;
 // total 16*16 == 256 thread in a block
+auto constexpr BLK_THREAD_NUM = TM_CNT * TN_CNT;
 
 __global__ void matmul(float *C, float *A, float *B);
 void run(float *C, float *A, float *B) {
@@ -35,8 +36,6 @@ __device__ __forceinline__ float4 *as_f4p(float *p) {
 }
 
 __global__ void matmul(float *C, float *A, float *B) {
-  static_assert(TM == TN && TN == BK && BK == 8, "use specified param");
-
   __shared__ float sA[BK * BM];
   __shared__ float sB[BK * BN];
 
@@ -91,51 +90,56 @@ __global__ void matmul(float *C, float *A, float *B) {
   size_t const Cy = by + wy + ty;
   size_t const Cx = bx + wx + tx;
 
-  size_t Ay = tid / 2, Ax = (tid % 2) * 4;
-  size_t By = tid / 32, Bx = (tid % 32) * 4;
-
   for (auto bk = 0; bk < K; bk += BK) {
-    float *const gA = A + K * by + bk;
-    float *const gB = B + N * bk + bx;
+    { // load A to smem, and transpose
+      /*
+       *   gA    BK           sA    128
+       *   +-----+-----+       +--+---------+
+       *   | t0  |t1   |       |t0|...      |
+       *   +-----+-----+       |  |         |
+       * 1 | t2  |t3   |     B +--+---------+
+       * 2 +-----+-----+     K |t1|...      |
+       * 8 | ... | ... |       |  |         |
+       *   |     |     |       +--+---------+
+       *   +-----+-----+
+       *   |t254 |t255 |
+       *   +-----+-----+
+       */
+      size_t constexpr TX_GA = (BK / 2);
 
-    float4 const rA = *as_f4p(gA + Ay * K + Ax);
-    float4 const rB = *as_f4p(gB + By * N + Bx);
-    // load A to smem, and transpose
-    /*
-     *   gA    8            sA    128
-     *   +-----+-----+       +--+---------+---
-     *   | t0  | t1  |       |t0|...      |padding
-     *   +-----+-----+       |  |         |  |
-     * 1 | t2  | t3  |     8 +--+---------+--+
-     * 2 +-----+-----+       |t1|...      |padding
-     * 8 | t4  | t5  |       |  |         |  |
-     *   +-----+-----+       +--+---------+--+
-     *   | ... | ... |
-     *   |     |     |
-     *   +-----+-----+
-     *   |t254 |t255 |
-     *   +-----+-----+
-     */
-    // 由于有 4 个 padding, t0 和 t1 的 bank conflict 并不会很严重
+      float *const gA = A + K * by + bk;
+      size_t Ay = tid / 2, Ax = (tid % 2) * TX_GA;
 
-    sA[(Ax + 0) * BM + Ay] = rA.x;
-    sA[(Ax + 1) * BM + Ay] = rA.y;
-    sA[(Ax + 2) * BM + Ay] = rA.z;
-    sA[(Ax + 3) * BM + Ay] = rA.w;
+      for (size_t x = 0; x < TX_GA; x += 4) {
+        float4 const rA = *as_f4p(gA + Ay * K + (Ax + x));
+        sA[(Ax + x + 0) * BM + Ay] = rA.x;
+        sA[(Ax + x + 1) * BM + Ay] = rA.y;
+        sA[(Ax + x + 2) * BM + Ay] = rA.z;
+        sA[(Ax + x + 3) * BM + Ay] = rA.w;
+      }
+    }
 
-    // load B to smem directly
-    /*
-     *   gB       128
-     *   +-----+-----+----------+-----+
-     *   | t0  | t1  | ...      | t31 |
-     * 8 +-----+-----+----------+-----+
-     *   | ... |     |          |     |
-     *   +-----+-----+----------+-----+
-     *   | t224| t225| ...      | t255|
-     *   +-----+-----+----------+-----+
-     */
-    *as_f4p(&sB[By * BN + Bx]) = rB;
+    { // load B to smem directly
+      /*
+       *   gB       128
+       *   +-----+-----+----------+-----+
+       *   | t0  | t1  | ...      | t31 | TY_GB
+       * B +-----+-----+----------+-----+
+       * K | ... |     |          |     |
+       *   +-----+-----+----------+-----+
+       *   | t224| t225| ...      | t255| TY_GB
+       *   +-----+-----+----------+-----+
+       */
+      size_t constexpr TY_GB = (BK / (BLK_THREAD_NUM / 32));
 
+      float *const gB = B + N * bk + bx;
+      size_t By = (tid / 32) * TY_GB, Bx = (tid % 32) * 4;
+
+      for (size_t y = 0; y < TY_GB; y++) {
+        float4 const rB = *as_f4p(gB + (By + y) * N + Bx);
+        *as_f4p(&sB[(By + y) * BN + Bx]) = rB;
+      }
+    }
     __syncthreads();
 
     for (size_t k = 0; k < BK; k++) {
