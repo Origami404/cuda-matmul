@@ -120,7 +120,7 @@ __global__ void matmul(float *C, float *A, float *B) {
   static_assert(SMEM_USAGE <= 48 * 1024, "smem overflow");
 
   // registers used by compution
-  __align__(16) float pA[TM], pB[TN];
+  __align__(16) float pA[2][TM], pB[2][TN];
   float pC[TM][TN] = {0.0f};
 
   // registers used by gmem -> smem
@@ -151,19 +151,23 @@ __global__ void matmul(float *C, float *A, float *B) {
   };
 
   auto const smem_load = [&](size_t const &k) {
-    *as_f4p(pB + 0) = *as_f4p(&sB[k * BN + (sBx + 0)]);
-    *as_f4p(pB + 4) = *as_f4p(&sB[k * BN + (sBx + 4)]);
+    size_t const iter = k % 2;
 
-    *as_f4p(pA + 0) = *as_f4p(&sA[k * BM + (sAy + 0)]);
-    *as_f4p(pA + 4) = *as_f4p(&sA[k * BM + (sAy + 4)]);
+    *as_f4p(pB[iter] + 0) = *as_f4p(&sB[k * BN + (sBx + 0)]);
+    *as_f4p(pB[iter] + 4) = *as_f4p(&sB[k * BN + (sBx + 4)]);
+
+    *as_f4p(pA[iter] + 0) = *as_f4p(&sA[k * BM + (sAy + 0)]);
+    *as_f4p(pA[iter] + 4) = *as_f4p(&sA[k * BM + (sAy + 4)]);
   };
 
   auto const compute = [&](size_t const &k) {
+    size_t const iter = k % 2;
+
 #pragma unroll
     for (size_t y = 0; y < TM; y++) {
 #pragma unroll
       for (size_t x = 0; x < TN; x++) {
-        pC[y][x] += pA[y] * pB[x];
+        pC[y][x] += pA[iter][y] * pB[iter][x];
       }
     }
   };
@@ -176,21 +180,55 @@ __global__ void matmul(float *C, float *A, float *B) {
     }
   };
 
-  // outer-compute-loop
-  for (auto bk = 0; bk < K; bk += BK) {
-    gmem_load(bk);
-    smem_store();
-    __syncthreads();
+  { // how double buffering works
+    // clang-format off
+    // g>i : gmem_load(i * BK), s<i : smem_store(i * BK)
+    // s>ij : smem_load(j), cij : compute(j)
+    // Basicly, `>` for load, `<` for store. The | line for __syncthreads().
+/*
+*                         outer-loop k=BK                                                                            outer-loop final iter
+*          <---------------------------------------------->                                                        <----------------------->
+* 
+*         |                                            |   |                                            |   |     |                 |       |
+* g>0 s<0 | g>1                                        |s<1| g>2                                        |s<2|     | g>(K-1)         |s<(K-1)|
+*         |                                            |   |                                            |   |     |                 |       |
+*         | +----------------------------------------+ |   | +----------------------------------------+ |   | ... | +-------------+ |       |  +-------------+
+*         | |s>00  s>01  s>02 ...  s>0(k-1)          | |   | |s>10  s>11  s>12 ...  s>1(k-1)          | |   |     | |...          | |       |  |...          |
+*         | |      c00   c01  ...  c0(k-2)   c0(k-1) | |   | |      c10   c11  ...  c1(k-2)   c1(k-1) | |   |     | |             | |       |  |             |
+*         | +----------------------------------------+ |   | +----------------------------------------+ |   |     | +-------------+ |       |  +-------------+
+*         |  inner-loop 0                    BK times  |   |  inner-loop 1                    BK times  |   |     | inner-loop (K-2)|       |  inner-loop (K-1)
+*/
+    // clang-format on
+  }
 
-    // inner-compute-loop
-    for (size_t k = 0; k < BK; k++) {
+  const auto inner_loop = [&]() {
+    smem_load(0);
+#pragma unroll
+    for (size_t k = 1; k < BK; k++) {
+      // this two stage can be parallel in hardware
       smem_load(k);
-      compute(k);
+      compute(k - 1);
     }
+    compute(BK - 1);
+  };
 
+  // outer-compute-loop
+  gmem_load(0);
+  smem_store();
+  __syncthreads();
+
+  for (auto bk = BK; bk < K; bk += BK) {
+    // this two stage can be parallel in hardware
+    gmem_load(bk);
+    inner_loop();
+    __syncthreads();
+    smem_store();
     __syncthreads();
   }
 
+  inner_loop();
+
+  // finally, store back to C
   gmem_store();
 }
 

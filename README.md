@@ -206,6 +206,15 @@ Throughput: 7.356 TFLOPS
     (89.400% cuBLAS)
 ```
 
+### Use double buffering
+
+```
+matmul time: 135.825 ms
+Throughput: 8.095 TFLOPS 
+    (54.898% Max)
+    (98.384% cuBLAS)
+```
+
 ## Reference
 
 - [通用图形处理器设计](https://book.douban.com/subject/35998320/)
