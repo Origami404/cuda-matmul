@@ -36,15 +36,6 @@ __device__ __forceinline__ float4 *as_f4p(float *p) {
 }
 
 __global__ void matmul(float *C, float *A, float *B) {
-  __shared__ float sA[BK * BM];
-  __shared__ float sB[BK * BN];
-
-  auto constexpr SMEM_USAGE = sizeof(sA) + sizeof(sB);
-  static_assert(SMEM_USAGE <= 48 * 1024, "smem overflow");
-
-  __align__(16) float pA[TM], pB[TN];
-  float pC[TM][TN] = {0.0f};
-
   auto const tid = threadIdx.x;
   auto const by = blockIdx.y * BM;
   auto const bx = blockIdx.x * BN;
@@ -76,7 +67,6 @@ __global__ void matmul(float *C, float *A, float *B) {
      *   +-----------------------+  +-----------------------+
      */
   }
-
   size_t const wid = tid / 32;
   size_t const wy = (wid / 2) * (4 * TM);
   size_t const wx = (wid % 2) * (8 * TN);
@@ -90,65 +80,87 @@ __global__ void matmul(float *C, float *A, float *B) {
   size_t const Cy = by + wy + ty;
   size_t const Cx = bx + wx + tx;
 
+  { // load A to smem, and transpose
+    /*
+     *   gA    BK           sA    128
+     *   +-----+-----+       +--+---------+
+     *   | t0  |t1   |       |t0|...      |
+     *   +-----+-----+       |  |         |
+     * 1 | t2  |t3   |     B +--+---------+
+     * 2 +-----+-----+     K |t1|...      |
+     * 8 | ... | ... |       |  |         |
+     *   |     |     |       +--+---------+
+     *   +-----+-----+
+     *   |t254 |t255 |
+     *   +-----+-----+
+     */
+  }
+  size_t constexpr TX_GA = (BK / 2);
+  size_t Ay = tid / 2, Ax = (tid % 2) * TX_GA;
+
+  { // load B to smem directly
+    /*
+     *   gB       128
+     *   +-----+-----+----------+-----+
+     *   | t0  | t1  | ...      | t31 | TY_GB
+     * B +-----+-----+----------+-----+
+     * K | ... |     |          |     |
+     *   +-----+-----+----------+-----+
+     *   | t224| t225| ...      | t255| TY_GB
+     *   +-----+-----+----------+-----+
+     */
+  }
+  size_t constexpr TY_GB = (BK / (BLK_THREAD_NUM / 32));
+  size_t By = (tid / 32) * TY_GB, Bx = (tid % 32) * 4;
+
+  __shared__ float sA[BK * BM];
+  __shared__ float sB[BK * BN];
+
+  auto constexpr SMEM_USAGE = sizeof(sA) + sizeof(sB);
+  static_assert(SMEM_USAGE <= 48 * 1024, "smem overflow");
+
+  // registers used by compution
+  __align__(16) float pA[TM], pB[TN];
+  float pC[TM][TN] = {0.0f};
+
+  // registers used by gmem -> smem
+  float4 rA[TX_GA / 4];
+  float4 rB[TY_GB];
+
   for (auto bk = 0; bk < K; bk += BK) {
-    { // load A to smem, and transpose
-      /*
-       *   gA    BK           sA    128
-       *   +-----+-----+       +--+---------+
-       *   | t0  |t1   |       |t0|...      |
-       *   +-----+-----+       |  |         |
-       * 1 | t2  |t3   |     B +--+---------+
-       * 2 +-----+-----+     K |t1|...      |
-       * 8 | ... | ... |       |  |         |
-       *   |     |     |       +--+---------+
-       *   +-----+-----+
-       *   |t254 |t255 |
-       *   +-----+-----+
-       */
-      size_t constexpr TX_GA = (BK / 2);
-
-      float *const gA = A + K * by + bk;
-      size_t Ay = tid / 2, Ax = (tid % 2) * TX_GA;
-
-      for (size_t x = 0; x < TX_GA; x += 4) {
-        float4 const rA = *as_f4p(gA + Ay * K + (Ax + x));
-        sA[(Ax + x + 0) * BM + Ay] = rA.x;
-        sA[(Ax + x + 1) * BM + Ay] = rA.y;
-        sA[(Ax + x + 2) * BM + Ay] = rA.z;
-        sA[(Ax + x + 3) * BM + Ay] = rA.w;
-      }
+    // gmem-load
+    float *const gA = A + K * by + bk;
+    for (size_t x = 0; x < TX_GA; x += 4) {
+      rA[x / 4] = *as_f4p(gA + Ay * K + (Ax + x));
+    }
+    float *const gB = B + N * bk + bx;
+    for (size_t y = 0; y < TY_GB; y++) {
+      rB[y] = *as_f4p(gB + (By + y) * N + Bx);
     }
 
-    { // load B to smem directly
-      /*
-       *   gB       128
-       *   +-----+-----+----------+-----+
-       *   | t0  | t1  | ...      | t31 | TY_GB
-       * B +-----+-----+----------+-----+
-       * K | ... |     |          |     |
-       *   +-----+-----+----------+-----+
-       *   | t224| t225| ...      | t255| TY_GB
-       *   +-----+-----+----------+-----+
-       */
-      size_t constexpr TY_GB = (BK / (BLK_THREAD_NUM / 32));
-
-      float *const gB = B + N * bk + bx;
-      size_t By = (tid / 32) * TY_GB, Bx = (tid % 32) * 4;
-
-      for (size_t y = 0; y < TY_GB; y++) {
-        float4 const rB = *as_f4p(gB + (By + y) * N + Bx);
-        *as_f4p(&sB[(By + y) * BN + Bx]) = rB;
-      }
+    // smem-store
+    for (size_t x = 0; x < TX_GA; x += 4) {
+      sA[(Ax + x + 0) * BM + Ay] = rA[x / 4].x;
+      sA[(Ax + x + 1) * BM + Ay] = rA[x / 4].y;
+      sA[(Ax + x + 2) * BM + Ay] = rA[x / 4].z;
+      sA[(Ax + x + 3) * BM + Ay] = rA[x / 4].w;
     }
+    for (size_t y = 0; y < TY_GB; y++) {
+      *as_f4p(&sB[(By + y) * BN + Bx]) = rB[y];
+    }
+
     __syncthreads();
 
+    // compute-loop
     for (size_t k = 0; k < BK; k++) {
+      // smem-load
       *as_f4p(pB + 0) = *as_f4p(&sB[k * BN + (sBx + 0)]);
       *as_f4p(pB + 4) = *as_f4p(&sB[k * BN + (sBx + 4)]);
 
       *as_f4p(pA + 0) = *as_f4p(&sA[k * BM + (sAy + 0)]);
       *as_f4p(pA + 4) = *as_f4p(&sA[k * BM + (sAy + 4)]);
 
+      // compute
 #pragma unroll
       for (size_t y = 0; y < TM; y++) {
 #pragma unroll
@@ -161,11 +173,10 @@ __global__ void matmul(float *C, float *A, float *B) {
     __syncthreads();
   }
 
-  { // store pC back to gC
-    for (size_t y = 0; y < TM; y++) {
-      for (size_t x = 0; x < TN; x += 4) {
-        *as_f4p(C + (Cy + y) * N + (Cx + x)) = *as_f4p(&pC[y][x]);
-      }
+  // gmem-store
+  for (size_t y = 0; y < TM; y++) {
+    for (size_t x = 0; x < TN; x += 4) {
+      *as_f4p(C + (Cy + y) * N + (Cx + x)) = *as_f4p(&pC[y][x]);
     }
   }
 }
