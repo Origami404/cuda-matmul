@@ -127,8 +127,7 @@ __global__ void matmul(float *C, float *A, float *B) {
   float4 rA[TX_GA / 4];
   float4 rB[TY_GB];
 
-  for (auto bk = 0; bk < K; bk += BK) {
-    // gmem-load
+  auto const gmem_load = [&](size_t const &bk) {
     float *const gA = A + K * by + bk;
     for (size_t x = 0; x < TX_GA; x += 4) {
       rA[x / 4] = *as_f4p(gA + Ay * K + (Ax + x));
@@ -137,8 +136,9 @@ __global__ void matmul(float *C, float *A, float *B) {
     for (size_t y = 0; y < TY_GB; y++) {
       rB[y] = *as_f4p(gB + (By + y) * N + Bx);
     }
+  };
 
-    // smem-store
+  auto const smem_store = [&]() {
     for (size_t x = 0; x < TX_GA; x += 4) {
       sA[(Ax + x + 0) * BM + Ay] = rA[x / 4].x;
       sA[(Ax + x + 1) * BM + Ay] = rA[x / 4].y;
@@ -148,37 +148,50 @@ __global__ void matmul(float *C, float *A, float *B) {
     for (size_t y = 0; y < TY_GB; y++) {
       *as_f4p(&sB[(By + y) * BN + Bx]) = rB[y];
     }
+  };
 
-    __syncthreads();
+  auto const smem_load = [&](size_t const &k) {
+    *as_f4p(pB + 0) = *as_f4p(&sB[k * BN + (sBx + 0)]);
+    *as_f4p(pB + 4) = *as_f4p(&sB[k * BN + (sBx + 4)]);
 
-    // compute-loop
-    for (size_t k = 0; k < BK; k++) {
-      // smem-load
-      *as_f4p(pB + 0) = *as_f4p(&sB[k * BN + (sBx + 0)]);
-      *as_f4p(pB + 4) = *as_f4p(&sB[k * BN + (sBx + 4)]);
+    *as_f4p(pA + 0) = *as_f4p(&sA[k * BM + (sAy + 0)]);
+    *as_f4p(pA + 4) = *as_f4p(&sA[k * BM + (sAy + 4)]);
+  };
 
-      *as_f4p(pA + 0) = *as_f4p(&sA[k * BM + (sAy + 0)]);
-      *as_f4p(pA + 4) = *as_f4p(&sA[k * BM + (sAy + 4)]);
-
-      // compute
+  auto const compute = [&](size_t const &k) {
 #pragma unroll
-      for (size_t y = 0; y < TM; y++) {
+    for (size_t y = 0; y < TM; y++) {
 #pragma unroll
-        for (size_t x = 0; x < TN; x++) {
-          pC[y][x] += pA[y] * pB[x];
-        }
+      for (size_t x = 0; x < TN; x++) {
+        pC[y][x] += pA[y] * pB[x];
       }
     }
+  };
+
+  auto const gmem_store = [&]() {
+    for (size_t y = 0; y < TM; y++) {
+      for (size_t x = 0; x < TN; x += 4) {
+        *as_f4p(C + (Cy + y) * N + (Cx + x)) = *as_f4p(&pC[y][x]);
+      }
+    }
+  };
+
+  // outer-compute-loop
+  for (auto bk = 0; bk < K; bk += BK) {
+    gmem_load(bk);
+    smem_store();
+    __syncthreads();
+
+    // inner-compute-loop
+    for (size_t k = 0; k < BK; k++) {
+      smem_load(k);
+      compute(k);
+    }
 
     __syncthreads();
   }
 
-  // gmem-store
-  for (size_t y = 0; y < TM; y++) {
-    for (size_t x = 0; x < TN; x += 4) {
-      *as_f4p(C + (Cy + y) * N + (Cx + x)) = *as_f4p(&pC[y][x]);
-    }
-  }
+  gmem_store();
 }
 
 static inline bool feq(float a, float b) { return abs(a - b) <= 1e-2f; }
